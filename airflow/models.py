@@ -534,6 +534,7 @@ class Connection(Base):
         ('ssh', 'SSH',),
         ('cloudant', 'IBM Cloudant',),
         ('mssql', 'Microsoft SQL Server'),
+        ('kafka', 'Apache Kafka'),
         ('mesos_framework-id', 'Mesos Framework ID'),
     ]
 
@@ -655,6 +656,9 @@ class Connection(Base):
             elif self.conn_type == 'cloudant':
                 from airflow.contrib.hooks.cloudant_hook import CloudantHook
                 return CloudantHook(cloudant_conn_id=self.conn_id)
+            elif self.conn_type == 'kafka':
+                from airflow.contrib.hooks.kafka_hook import KafkaHook
+                return KafkaHook(kafka_conn_id=self.conn_id)
         except:
             pass
 
