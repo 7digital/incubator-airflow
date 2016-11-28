@@ -30,6 +30,8 @@ class MsSqlHook(DbApiHook):
         """
         Returns a mssql connection object
         """
+        print "-------------------------------------------------------"
+        print "MS SQL HOOK"
         print self.mssql_conn_id
 
         conn = self.get_connection(self.mssql_conn_id)
