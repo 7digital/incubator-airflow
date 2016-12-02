@@ -59,6 +59,7 @@ class MsSqlToKafka(BaseOperator):
             for df in self._query_mssql():
                 logging.info("Loading query chunk {0}".format(df))
                 try:
+                    logging.info("Loading chunk into json")
                     msgs = json.loads(df.to_json(orient='records'))
                 except Exception as e:
                     logging.info("Exception found when loading dataframe to json: {0}".format(e))
@@ -89,7 +90,7 @@ class MsSqlToKafka(BaseOperator):
 
         #CHANGE THIS TO MSSQL.GETPANDASDF!
         try:
-            for df in pd.read_sql(self.sql, conn, chunksize=25000):
+            for df in pd.read_sql(self.sql, conn, chunksize=10000):
                 yield df
         except Exception as e:
             logging.exception("Error reading from mssql: {0}".format(e))
