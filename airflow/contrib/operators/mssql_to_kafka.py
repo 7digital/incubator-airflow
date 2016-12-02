@@ -57,17 +57,14 @@ class MsSqlToKafka(BaseOperator):
         with kafka_conn.get_producer() as producer:
             logging.info("Got kafka producer {0}".format(producer))
             for df in self._query_mssql():
-                logging.info("Loading query chunk {0}".format(df))
                 try:
                     logging.info("Loading chunk into json")
                     msgs = json.loads(df.to_json(orient='records',date_format='iso'))
                 except Exception as e:
                     logging.info("Exception found when loading dataframe to json: {0}".format(e))
-                logging.info("Loaded {0} messages".format(len(msgs)))
 
                 for msg in msgs:
                     producer.produce(bytes(json.dumps(msg)))
-                logging.info("Finished producing messages for chunk {0}".format(producer))
             logging.info("Exiting kafka hook execution")
 
     def _get_kafka_producer(self):
@@ -89,8 +86,6 @@ class MsSqlToKafka(BaseOperator):
 
 
         #CHANGE THIS TO MSSQL.GETPANDASDF!
-        try:
-            for df in pd.read_sql(self.sql, conn, chunksize=10000):
-                yield df
-        except Exception as e:
-            logging.exception("Error reading from mssql: {0}".format(e))
+        for df in pd.read_sql(self.sql, conn, chunksize=25000):
+            yield df
+
