@@ -58,7 +58,10 @@ class MsSqlToKafka(BaseOperator):
             logging.info("Got kafka producer {0}".format(producer))
             for df in self._query_mssql():
                 logging.info("Loading query chunk {0}".format(df))
-                msgs = json.loads(df.to_json(orient='records'))
+                try:
+                    msgs = json.loads(df.to_json(orient='records'))
+                except Exception as e:
+                    logging.info("Exception found when loading dataframe to json: {0}".format(e))
                 logging.info("Loaded {0} messages".format(len(msgs)))
 
                 for msg in msgs:
