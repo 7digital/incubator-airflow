@@ -14,6 +14,7 @@
 
 import json
 import pandas as pd
+import logging
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
 from airflow.hooks.mssql_hook import MsSqlHook
@@ -54,6 +55,7 @@ class MsSqlToKafka(BaseOperator):
         kafka_conn = self._get_kafka_producer()
 
         with kafka_conn.get_producer() as producer:
+            logging.info("Got kafka producer {0}".format(producer))
             for df in self._query_mssql():
                 msgs = json.loads(df.to_json(orient='records'))
 
@@ -75,6 +77,8 @@ class MsSqlToKafka(BaseOperator):
         """
         mssql = MsSqlHook(mssql_conn_id=self.mssql_conn_id)
         conn = mssql.get_conn()
+        logging.info("Connected to mssql db {0}".format(conn))
+
 
         #CHANGE THIS TO MSSQL.GETPANDASDF!
         for df in pd.read_sql(self.sql, conn, chunksize=25000):
