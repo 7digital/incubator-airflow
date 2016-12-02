@@ -57,10 +57,14 @@ class MsSqlToKafka(BaseOperator):
         with kafka_conn.get_producer() as producer:
             logging.info("Got kafka producer {0}".format(producer))
             for df in self._query_mssql():
+                logging.info("Loading query chunk {0}".format(df))
                 msgs = json.loads(df.to_json(orient='records'))
+                logging.info("Loaded {0} messages".format(len(msgs)))
 
                 for msg in msgs:
                     producer.produce(bytes(json.dumps(msg)))
+                logging.info("Finished producing messages for chunk {0}".format(producer))
+            logging.info("Exiting kafka hook execution")
 
     def _get_kafka_producer(self):
         hook = KafkaHook(kafka_topic=self.kafka_topic,
