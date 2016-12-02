@@ -81,5 +81,8 @@ class MsSqlToKafka(BaseOperator):
 
 
         #CHANGE THIS TO MSSQL.GETPANDASDF!
-        for df in pd.read_sql(self.sql, conn, chunksize=25000):
-            yield df
+        try:
+            for df in pd.read_sql(self.sql, conn, chunksize=25000):
+                yield df
+        except Exception as e:
+            logging.exception("Error reading from mssql: {0}".format(e))
