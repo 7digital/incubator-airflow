@@ -13,7 +13,8 @@
 # limitations under the License.
 import unittest
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from airflow.models import DagBag
 
 import json
 
@@ -30,16 +31,16 @@ class ApiExperimentalTests(unittest.TestCase):
         url_template = '/api/experimental/dags/{}/tasks/{}'
 
         response = self.app.get(url_template.format('example_bash_operator', 'runme_0'))
-        assert '"email"' in response.data.decode('utf-8')
-        assert 'error' not in response.data.decode('utf-8')
+        self.assertIn('"email"', response.data.decode('utf-8'))
+        self.assertNotIn('error', response.data.decode('utf-8'))
         self.assertEqual(200, response.status_code)
-       
+
         response = self.app.get(url_template.format('example_bash_operator', 'DNE'))
-        assert 'error' in response.data.decode('utf-8')
+        self.assertIn('error', response.data.decode('utf-8'))
         self.assertEqual(404, response.status_code)
 
         response = self.app.get(url_template.format('DNE', 'DNE'))
-        assert 'error' in response.data.decode('utf-8')
+        self.assertIn('error', response.data.decode('utf-8'))
         self.assertEqual(404, response.status_code)
 
     def test_trigger_dag(self):
@@ -59,4 +60,43 @@ class ApiExperimentalTests(unittest.TestCase):
         )
         self.assertEqual(404, response.status_code)
 
+    def test_trigger_dag_for_date(self):
+        url_template = '/api/experimental/dags/{}/dag_runs'
+        dag_id = 'example_bash_operator'
+        hour_from_now = datetime.now() + timedelta(hours=1)
+        execution_date = datetime(hour_from_now.year,
+                                  hour_from_now.month,
+                                  hour_from_now.day,
+                                  hour_from_now.hour)
+        datetime_string = execution_date.isoformat()
 
+        # Test Correct execution
+        response = self.app.post(
+            url_template.format(dag_id),
+            data=json.dumps(dict(execution_date=datetime_string)),
+            content_type="application/json"
+        )
+        self.assertEqual(200, response.status_code)
+
+        dagbag = DagBag()
+        dag = dagbag.get_dag(dag_id)
+        dag_run = dag.get_dagrun(execution_date)
+        self.assertTrue(dag_run,
+                        'Dag Run not found for execution date {}'
+                        .format(execution_date))
+
+        # Test error for nonexistent dag
+        response = self.app.post(
+            url_template.format('does_not_exist_dag'),
+            data=json.dumps(dict(execution_date=execution_date.isoformat())),
+            content_type="application/json"
+        )
+        self.assertEqual(404, response.status_code)
+
+        # Test error for bad datetime format
+        response = self.app.post(
+            url_template.format(dag_id),
+            data=json.dumps(dict(execution_date='not_a_datetime')),
+            content_type="application/json"
+        )
+        self.assertEqual(400, response.status_code)

@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Kept manually in sync with airflow.__version__
 version = imp.load_source(
-    'version', os.path.join('airflow', 'version.py')).version
+    'airflow.version', os.path.join('airflow', 'version.py')).version
 
 
 class Tox(TestCommand):
@@ -68,10 +68,10 @@ def git_version(version):
         import git
         repo = git.Repo('.git')
     except ImportError:
-        logger.warn('gitpython not found: Cannot compute the git version.')
+        logger.warning('gitpython not found: Cannot compute the git version.')
         return ''
     except Exception as e:
-        logger.warn('Git repo not found: Cannot compute the git version.')
+        logger.warning('Git repo not found: Cannot compute the git version.')
         return ''
     if repo:
         sha = repo.head.commit.hexsha
@@ -108,7 +108,13 @@ celery = [
     'celery>=3.1.17',
     'flower>=0.7.3'
 ]
+cgroups = [
+    'cgroupspy>=0.1.4',
+]
 crypto = ['cryptography>=0.9.3']
+dask = [
+    'distributed>=1.15.2, <2'
+    ]
 datadog = ['datadog>=0.14.0']
 doc = [
     'sphinx>=1.2.3',
@@ -127,6 +133,7 @@ gcp_api = [
 ]
 hdfs = ['snakebite>=2.7.8']
 webhdfs = ['hdfs[dataframe,avro,kerberos]>=2.0.4']
+jira = ['JIRA>1.0.7']
 hive = [
     'hive-thrift-py>=0.0.1',
     'pyhive>=0.1.3',
@@ -174,7 +181,7 @@ devel = [
     'nose-ignore-docstring==0.2',
     'nose-parameterized',
 ]
-devel_minreq = devel + mysql + doc + password + s3
+devel_minreq = devel + mysql + doc + password + s3 + cgroups
 devel_hadoop = devel_minreq + hive + hdfs + webhdfs + kerberos
 devel_all = devel + all_dbs + doc + samba + s3 + slack + crypto + oracle + docker
 
@@ -201,11 +208,11 @@ def do_setup():
             'flask-login==0.2.11',
             'flask-swagger==0.2.13',
             'flask-wtf==0.12',
-            'funcsigs>=1.0.2, <1.1',
-            'future>=0.15.0, <0.16',
+            'funcsigs==1.0.0',
+            'future>=0.15.0, <0.17',
             'gitpython>=2.0.2',
             'gunicorn>=19.3.0, <19.4.0',  # 19.4.? seemed to have issues
-            'jinja2>=2.7.3, <3.0',
+            'jinja2>=2.7.3, <2.9.0',
             'lxml>=3.6.0, <4.0',
             'markdown>=2.5.2, <3.0',
             'pandas>=0.17.1, <1.0.0',
@@ -226,8 +233,10 @@ def do_setup():
             'all_dbs': all_dbs,
             'async': async,
             'celery': celery,
+            'cgroups': cgroups,
             'cloudant': cloudant,
             'crypto': crypto,
+            'dask': dask,
             'datadog': datadog,
             'devel': devel_minreq,
             'devel_hadoop': devel_hadoop,
@@ -256,6 +265,7 @@ def do_setup():
             'statsd': statsd,
             'vertica': vertica,
             'webhdfs': webhdfs,
+            'jira': jira,
         },
         classifiers=[
             'Development Status :: 5 - Production/Stable',
@@ -268,11 +278,11 @@ def do_setup():
             'Programming Language :: Python :: 3.4',
             'Topic :: System :: Monitoring',
         ],
-        author='Maxime Beauchemin',
-        author_email='maximebeauchemin@gmail.com',
-        url='https://github.com/apache/incubator-airflow',
+        author='Apache Software Foundation',
+        author_email='dev@airflow.incubator.apache.org',
+        url='http://airflow.incubator.apache.org/',
         download_url=(
-            'https://github.com/apache/incubator-airflow/tarball/' + version),
+            'https://dist.apache.org/repos/dist/release/incubator/airflow/' + version),
         cmdclass={
             'test': Tox,
             'extra_clean': CleanCommand,

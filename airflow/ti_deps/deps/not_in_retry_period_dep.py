@@ -25,10 +25,16 @@ class NotInRetryPeriodDep(BaseTIDep):
 
     @provide_session
     def _get_dep_statuses(self, ti, session, dep_context):
+        if dep_context.ignore_in_retry_period:
+            yield self._passing_status(
+                reason="The context specified that being in a retry period was "
+                       "permitted.")
+            return
+
         if ti.state != State.UP_FOR_RETRY:
             yield self._passing_status(
                 reason="The task instance was not marked for retrying.")
-            raise StopIteration
+            return
 
         # Calculate the date first so that it is always smaller than the timestamp used by
         # ready_for_retry

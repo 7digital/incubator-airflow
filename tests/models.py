@@ -49,8 +49,8 @@ class DagTest(unittest.TestCase):
         """
         dag = models.DAG('test-dag')
 
-        assert type(dag.params) == dict
-        assert len(dag.params) == 0
+        self.assertEqual(dict, type(dag.params))
+        self.assertEqual(0, len(dag.params))
 
     def test_params_passed_and_params_in_default_args_no_override(self):
         """
@@ -68,7 +68,7 @@ class DagTest(unittest.TestCase):
 
         params_combined = params1.copy()
         params_combined.update(params2)
-        assert dag.params == params_combined
+        self.assertEqual(params_combined, dag.params)
 
     def test_dag_as_context_manager(self):
         """
@@ -121,7 +121,7 @@ class DagRunTest(unittest.TestCase):
     def test_id_for_date(self):
         run_id = models.DagRun.id_for_date(
             datetime.datetime(2015, 1, 2, 3, 4, 5, 6, None))
-        assert run_id == 'scheduled__2015-01-02T03:04:05', (
+        self.assertEqual('scheduled__2015-01-02T03:04:05', run_id, msg=
             'Generated run_id did not match expectations: {0}'.format(run_id))
 
 
@@ -139,10 +139,10 @@ class DagBagTest(unittest.TestCase):
         for dag_id in some_expected_dag_ids:
             dag = dagbag.get_dag(dag_id)
 
-            assert dag is not None
-            assert dag.dag_id == dag_id
+            self.assertIsNotNone(dag)
+            self.assertEqual(dag_id, dag.dag_id)
 
-        assert dagbag.size() >= 7
+        self.assertGreaterEqual(dagbag.size(), 7)
 
     def test_get_non_existing_dag(self):
         """
@@ -151,7 +151,7 @@ class DagBagTest(unittest.TestCase):
         dagbag = models.DagBag(include_examples=True)
 
         non_existing_dag_id = "non_existing_dag_id"
-        assert dagbag.get_dag(non_existing_dag_id) is None
+        self.assertIsNone(dagbag.get_dag(non_existing_dag_id))
 
     def test_process_file_that_contains_multi_bytes_char(self):
         """
@@ -163,7 +163,7 @@ class DagBagTest(unittest.TestCase):
         f.flush()
 
         dagbag = models.DagBag(include_examples=True)
-        assert dagbag.process_file(f.name) == []
+        self.assertEqual([], dagbag.process_file(f.name))
 
     def test_zip(self):
         """
@@ -171,7 +171,7 @@ class DagBagTest(unittest.TestCase):
         """
         dagbag = models.DagBag()
         dagbag.process_file(os.path.join(TEST_DAGS_FOLDER, "test_zip.zip"))
-        assert dagbag.get_dag("test_zip_dag")
+        self.assertTrue(dagbag.get_dag("test_zip_dag"))
 
     @patch.object(DagModel,'get_current')
     def test_get_dag_without_refresh(self, mock_dagmodel):
@@ -188,7 +188,7 @@ class DagBagTest(unittest.TestCase):
         class TestDagBag(models.DagBag):
             process_file_calls = 0
             def process_file(self, filepath, only_if_updated=True, safe_mode=True):
-                if 'example_bash_operator.py' in filepath:
+                if 'example_bash_operator.py' == os.path.basename(filepath):
                     TestDagBag.process_file_calls += 1
                 super(TestDagBag, self).process_file(filepath, only_if_updated, safe_mode)
 
@@ -196,9 +196,27 @@ class DagBagTest(unittest.TestCase):
         processed_files = dagbag.process_file_calls
 
         # Should not call process_file agani, since it's already loaded during init.
-        assert dagbag.process_file_calls == 1
-        assert dagbag.get_dag(dag_id) != None
-        assert dagbag.process_file_calls == 1
+        self.assertEqual(1, dagbag.process_file_calls)
+        self.assertIsNotNone(dagbag.get_dag(dag_id))
+        self.assertEqual(1, dagbag.process_file_calls)
+
+    def test_get_dag_fileloc(self):
+        """
+        Test that fileloc is correctly set when we load example DAGs,
+        specifically SubDAGs.
+        """
+        dagbag = models.DagBag(include_examples=True)
+
+        expected = {
+            'example_bash_operator': 'example_bash_operator.py',
+            'example_subdag_operator': 'example_subdag_operator.py',
+            'example_subdag_operator.section-1': 'subdags/subdag.py'
+        }
+
+        for dag_id, path in expected.items():
+            dag = dagbag.get_dag(dag_id)
+            self.assertTrue(
+                dag.fileloc.endswith('airflow/example_dags/' + path))
 
 
 class TaskInstanceTest(unittest.TestCase):
@@ -588,6 +606,14 @@ class TaskInstanceTest(unittest.TestCase):
         # prior success)
         self.assertEqual(ti.xcom_pull(task_ids='test_xcom', key=key), value)
 
+        # Test AIRFLOW-703: Xcom shouldn't be cleared if the task doesn't
+        # execute, even if dependencies are ignored
+        ti.run(ignore_all_deps=True, mark_success=True)
+        self.assertEqual(ti.xcom_pull(task_ids='test_xcom', key=key), value)
+        # Xcom IS finally cleared once task has executed
+        ti.run(ignore_all_deps=True)
+        self.assertEqual(ti.xcom_pull(task_ids='test_xcom', key=key), None)
+
     def test_xcom_pull_different_execution_date(self):
         """
         tests xcom fetch behavior with different execution dates, using
@@ -623,3 +649,29 @@ class TaskInstanceTest(unittest.TestCase):
                                       key=key,
                                       include_prior_dates=True),
                          value)
+
+    def test_post_execute_hook(self):
+        """
+        Test that post_execute hook is called with the Operator's result.
+        The result ('error') will cause an error to be raised and trapped.
+        """
+
+        class TestError(Exception):
+            pass
+
+        class TestOperator(PythonOperator):
+            def post_execute(self, context, result):
+                if result == 'error':
+                    raise TestError('expected error.')
+
+        dag = models.DAG(dag_id='test_post_execute_dag')
+        task = TestOperator(
+            task_id='test_operator',
+            dag=dag,
+            python_callable=lambda: 'error',
+            owner='airflow',
+            start_date=datetime.datetime(2017, 2, 1))
+        ti = TI(task=task, execution_date=datetime.datetime.now())
+
+        with self.assertRaises(TestError):
+            ti.run()

@@ -72,7 +72,7 @@ def get_ldap_connection(dn=None, password=None):
 def group_contains_user(conn, search_base, group_filter, user_name_attr, username):
     search_filter = '(&({0}))'.format(group_filter)
     if not conn.search(search_base, search_filter, attributes=[user_name_attr]):
-        LOG.warn("Unable to find group for %s %s", search_base, search_filter)
+        LOG.warning("Unable to find group for %s %s", search_base, search_filter)
     else:
         for resp in conn.response:
             if (
@@ -93,14 +93,14 @@ def groups_user(conn, search_base, user_filter, user_name_att, username):
         raise AuthenticationError("Invalid username or password")
 
     if conn.response and "memberOf" not in conn.response[0]["attributes"]:
-        LOG.warn("""Missing attribute "memberOf" when looked-up in Ldap database.
+        LOG.warning("""Missing attribute "memberOf" when looked-up in Ldap database.
         The user does not seem to be a member of a group and therefore won't see any dag
         if the option filter_by_owner=True and owner_mode=ldapgroup are set""")
         return []
 
     user_groups = conn.response[0]["attributes"]["memberOf"]
 
-    regex = re.compile("cn=([^,]*).*")
+    regex = re.compile("cn=([^,]*).*", re.IGNORECASE)
     groups_list = []
     try:
         groups_list = [regex.search(i).group(1) for i in user_groups]

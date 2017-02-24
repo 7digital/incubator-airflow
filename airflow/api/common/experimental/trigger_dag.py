@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime
+import datetime
 import json
 
 from airflow.exceptions import AirflowException
 from airflow.models import DagRun, DagBag
 from airflow.utils.state import State
 
-import logging
 
-
-def trigger_dag(dag_id, run_id=None, conf=None):
+def trigger_dag(dag_id, run_id=None, conf=None, execution_date=None):
     dagbag = DagBag()
 
     if dag_id not in dagbag.dags:
@@ -30,7 +28,11 @@ def trigger_dag(dag_id, run_id=None, conf=None):
 
     dag = dagbag.get_dag(dag_id)
 
-    execution_date = datetime.now()
+    if not execution_date:
+        execution_date = datetime.datetime.now()
+
+    assert isinstance(execution_date, datetime.datetime)
+    execution_date = execution_date.replace(microsecond=0)
 
     if not run_id:
         run_id = "manual__{0}".format(execution_date.isoformat())

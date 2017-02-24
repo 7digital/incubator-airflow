@@ -30,7 +30,6 @@ from sqlalchemy import event, exc
 from sqlalchemy.pool import Pool
 
 from airflow import settings
-from airflow import configuration
 
 
 def provide_session(func):
@@ -114,7 +113,7 @@ def initdb():
     merge_conn(
         models.Connection(
             conn_id='airflow_ci', conn_type='mysql',
-            host='localhost', login='root',
+            host='localhost', login='root', extra="{\"local_infile\": true}",
             schema='airflow_ci'))
     merge_conn(
         models.Connection(
@@ -287,8 +286,7 @@ def upgradedb():
     directory = os.path.join(package_dir, 'migrations')
     config = Config(os.path.join(package_dir, 'alembic.ini'))
     config.set_main_option('script_location', directory)
-    config.set_main_option('sqlalchemy.url',
-                           configuration.get('core', 'SQL_ALCHEMY_CONN'))
+    config.set_main_option('sqlalchemy.url', settings.SQL_ALCHEMY_CONN)
     command.upgrade(config, 'heads')
 
 

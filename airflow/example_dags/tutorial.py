@@ -17,19 +17,18 @@
 Documentation that goes along with the Airflow tutorial located
 [here](http://pythonhosted.org/airflow/tutorial.html)
 """
+import airflow
 from airflow import DAG
 from airflow.operators.bash_operator import BashOperator
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-seven_days_ago = datetime.combine(datetime.today() - timedelta(7),
-                                  datetime.min.time())
 
 # these args will get passed on to each operator
 # you can override them on a per-task basis during operator initialization
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': seven_days_ago,
+    'start_date': airflow.utils.dates.days_ago(2),
     'email': ['airflow@airflow.com'],
     'email_on_failure': False,
     'email_on_retry': False,
@@ -50,7 +49,11 @@ default_args = {
     # 'trigger_rule': u'all_success'
 }
 
-dag = DAG('tutorial', default_args=default_args, schedule_interval=timedelta(days=1))
+dag = DAG(
+    'tutorial',
+    default_args=default_args,
+    description='A simple tutorial DAG',
+    schedule_interval=timedelta(days=1))
 
 # t1, t2 and t3 are examples of tasks created by instantiating operators
 t1 = BashOperator(

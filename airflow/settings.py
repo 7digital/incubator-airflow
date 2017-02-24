@@ -23,6 +23,7 @@ import sys
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from airflow import configuration as conf
 
@@ -67,10 +68,7 @@ ___  ___ |  / _  /   _  __/ _  / / /_/ /_ |/ |/ /
  """
 
 BASE_LOG_URL = '/admin/airflow/log'
-AIRFLOW_HOME = os.path.expanduser(conf.get('core', 'AIRFLOW_HOME'))
-SQL_ALCHEMY_CONN = conf.get('core', 'SQL_ALCHEMY_CONN')
 LOGGING_LEVEL = logging.INFO
-DAGS_FOLDER = os.path.expanduser(conf.get('core', 'DAGS_FOLDER'))
 
 # the prefix to append to gunicorn worker processes after init
 GUNICORN_WORKER_READY_PREFIX = "[ready] "
@@ -83,6 +81,13 @@ LOG_FORMAT_WITH_PID = (
 LOG_FORMAT_WITH_THREAD_NAME = (
     '[%(asctime)s] {%(filename)s:%(lineno)d} %(threadName)s %(levelname)s - %(message)s')
 SIMPLE_LOG_FORMAT = '%(asctime)s %(levelname)s - %(message)s'
+
+AIRFLOW_HOME = None
+SQL_ALCHEMY_CONN = None
+DAGS_FOLDER = None
+
+engine = None
+Session = None
 
 
 def policy(task_instance):
@@ -117,20 +122,27 @@ def configure_logging(log_format=LOG_FORMAT):
     logging.basicConfig(
         format=log_format, stream=sys.stdout, level=LOGGING_LEVEL)
 
-engine = None
-Session = None
+
+def configure_vars():
+    global AIRFLOW_HOME
+    global SQL_ALCHEMY_CONN
+    global DAGS_FOLDER
+    AIRFLOW_HOME = os.path.expanduser(conf.get('core', 'AIRFLOW_HOME'))
+    SQL_ALCHEMY_CONN = conf.get('core', 'SQL_ALCHEMY_CONN')
+    DAGS_FOLDER = os.path.expanduser(conf.get('core', 'DAGS_FOLDER'))
 
 
-def configure_orm():
+def configure_orm(disable_connection_pool=False):
     global engine
     global Session
     engine_args = {}
-    if 'sqlite' not in SQL_ALCHEMY_CONN:
+    if disable_connection_pool:
+        engine_args['poolclass'] = NullPool
+    elif 'sqlite' not in SQL_ALCHEMY_CONN:
         # Engine args not supported by sqlite
         engine_args['pool_size'] = conf.getint('core', 'SQL_ALCHEMY_POOL_SIZE')
         engine_args['pool_recycle'] = conf.getint('core',
                                                   'SQL_ALCHEMY_POOL_RECYCLE')
-        #engine_args['echo'] = True
 
     engine = create_engine(SQL_ALCHEMY_CONN, **engine_args)
     Session = scoped_session(
@@ -143,4 +155,11 @@ except:
     pass
 
 configure_logging()
+configure_vars()
 configure_orm()
+
+# Const stuff
+
+KILOBYTE = 1024
+MEGABYTE = KILOBYTE * KILOBYTE
+WEB_COLORS = {'LIGHTBLUE': '#4d9de0'}

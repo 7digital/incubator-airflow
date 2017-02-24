@@ -198,8 +198,8 @@ def list_py_file_paths(directory, safe_mode=True):
                     if safe_mode:
                         with open(file_path, 'rb') as f:
                             content = f.read()
-                            might_contain_dag = all([s in content
-                                                     for s in (b'DAG', b'airflow')])
+                            might_contain_dag = all(
+                                [s in content for s in (b'DAG', b'airflow')])
 
                     if not might_contain_dag:
                         continue
@@ -307,6 +307,7 @@ class DagFileProcessorManager(LoggingMixin):
     :type _last_runtime: dict[unicode, float]
     :type _last_finish_time: dict[unicode, datetime]
     """
+
     def __init__(self,
                  dag_directory,
                  file_paths,
@@ -354,6 +355,8 @@ class DagFileProcessorManager(LoggingMixin):
         self._last_finish_time = {}
         # Map from file path to the number of runs
         self._run_count = defaultdict(int)
+        # Scheduler heartbeat key.
+        self._heart_beat_key = 'heart-beat'
 
     @property
     def file_paths(self):
@@ -440,7 +443,7 @@ class DagFileProcessorManager(LoggingMixin):
             if file_path in new_file_paths:
                 filtered_processors[file_path] = processor
             else:
-                self.logger.warn("Stopping processor for {}".format(file_path))
+                self.logger.warning("Stopping processor for {}".format(file_path))
                 processor.stop()
         self._processors = filtered_processors
 
@@ -475,7 +478,7 @@ class DagFileProcessorManager(LoggingMixin):
         """
         now = datetime.now()
         return os.path.join(self._child_process_log_directory,
-            now.strftime("%Y-%m-%d"))
+                            now.strftime("%Y-%m-%d"))
 
     def _get_log_file_path(self, dag_file_path):
         """
@@ -516,8 +519,8 @@ class DagFileProcessorManager(LoggingMixin):
                     os.symlink(log_directory, latest_log_directory_path)
             elif (os.path.isdir(latest_log_directory_path) or
                     os.path.isfile(latest_log_directory_path)):
-                self.logger.warn("{} already exists as a dir/file. "
-                                "Skip creating symlink."
+                self.logger.warning("{} already exists as a dir/file. "
+                                    "Skip creating symlink."
                                     .format(latest_log_directory_path))
             else:
                 os.symlink(log_directory, latest_log_directory_path)
@@ -569,11 +572,11 @@ class DagFileProcessorManager(LoggingMixin):
         simple_dags = []
         for file_path, processor in finished_processors.items():
             if processor.result is None:
-                self.logger.warn("Processor for {} exited with return code "
-                                 "{}. See {} for details."
-                                 .format(processor.file_path,
-                                         processor.exit_code,
-                                         processor.log_file))
+                self.logger.warning("Processor for {} exited with return code "
+                                    "{}. See {} for details."
+                                    .format(processor.file_path,
+                                            processor.exit_code,
+                                            processor.log_file))
             else:
                 for simple_dag in processor.result:
                     simple_dags.append(simple_dag)
@@ -628,15 +631,22 @@ class DagFileProcessorManager(LoggingMixin):
 
         self.symlink_latest_log_directory()
 
+        # Update scheduler heartbeat count.
+        self._run_count[self._heart_beat_key] += 1
+
         return simple_dags
 
     def max_runs_reached(self):
         """
         :return: whether all file paths have been processed max_runs times
         """
+        if self._max_runs == -1:  # Unlimited runs.
+            return False
         for file_path in self._file_paths:
             if self._run_count[file_path] != self._max_runs:
                 return False
+        if self._run_count[self._heart_beat_key] < self._max_runs:
+            return False
         return True
 
     def terminate(self):

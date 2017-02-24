@@ -19,14 +19,18 @@ from airflow.hooks.dbapi_hook import DbApiHook
 
 
 class PostgresHook(DbApiHook):
-    '''
+    """
     Interact with Postgres.
     You can specify ssl parameters in the extra field of your connection
     as ``{"sslmode": "require", "sslcert": "/path/to/cert.pem", etc}``.
-    '''
+    """
     conn_name_attr = 'postgres_conn_id'
     default_conn_name = 'postgres_default'
-    supports_autocommit = False
+    supports_autocommit = True
+
+    def __init__(self, *args, **kwargs):
+        super(PostgresHook, self).__init__(*args, **kwargs)
+        self.schema = kwargs.pop("schema", None)
 
     def get_conn(self):
         conn = self.get_connection(self.postgres_conn_id)
@@ -34,15 +38,13 @@ class PostgresHook(DbApiHook):
             host=conn.host,
             user=conn.login,
             password=conn.password,
-            dbname=conn.schema,
+            dbname=self.schema or conn.schema,
             port=conn.port)
         # check for ssl parameters in conn.extra
         for arg_name, arg_val in conn.extra_dejson.items():
             if arg_name in ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'sslcrl', 'application_name']:
                 conn_args[arg_name] = arg_val
         psycopg2_conn = psycopg2.connect(**conn_args)
-        if psycopg2_conn.server_version < 70400:
-            self.supports_autocommit = True
         return psycopg2_conn
 
     @staticmethod

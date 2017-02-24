@@ -20,21 +20,24 @@ from __future__ import unicode_literals
 import datetime
 import logging
 import os
+import shutil
 import unittest
+import six
+import sys
+from tempfile import mkdtemp
 
-from airflow import AirflowException, settings
-from airflow import models
+from airflow import AirflowException, settings, models
 from airflow.bin import cli
-from airflow.executors import DEFAULT_EXECUTOR
 from airflow.jobs import BackfillJob, SchedulerJob
 from airflow.models import DAG, DagModel, DagBag, DagRun, Pool, TaskInstance as TI
 from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.bash_operator import BashOperator
 from airflow.utils.db import provide_session
 from airflow.utils.state import State
 from airflow.utils.timeout import timeout
 from airflow.utils.dag_processing import SimpleDagBag
 from mock import patch
-from tests.executor.test_executor import TestExecutor
+from tests.executors.test_executor import TestExecutor
 
 from airflow import configuration
 configuration.load_test_config()
@@ -49,6 +52,15 @@ except ImportError:
 
 DEV_NULL = '/dev/null'
 DEFAULT_DATE = datetime.datetime(2016, 1, 1)
+
+# Include the words "airflow" and "dag" in the file contents, tricking airflow into thinking these
+# files contain a DAG (otherwise Airflow will skip them)
+PARSEABLE_DAG_FILE_CONTENTS = '"airflow DAG"'
+UNPARSEABLE_DAG_FILE_CONTENTS = 'airflow DAG'
+
+# Filename to be used for dags that are created in an ad-hoc manner and can be removed/
+# created at runtime
+TEMP_DAG_FILENAME = "temp_dag.py"
 
 
 class BackfillJobTest(unittest.TestCase):
@@ -95,7 +107,7 @@ class BackfillJobTest(unittest.TestCase):
         job = BackfillJob(
             dag=dag,
             start_date=DEFAULT_DATE,
-            end_date=DEFAULT_DATE+datetime.timedelta(days=1),
+            end_date=DEFAULT_DATE + datetime.timedelta(days=1),
             ignore_first_depends_on_past=True
         )
         job.run()
@@ -107,7 +119,8 @@ class BackfillJobTest(unittest.TestCase):
 
         self.assertTrue(drs[0].execution_date == DEFAULT_DATE)
         self.assertTrue(drs[0].state == State.SUCCESS)
-        self.assertTrue(drs[1].execution_date == DEFAULT_DATE+datetime.timedelta(days=1))
+        self.assertTrue(drs[1].execution_date ==
+                        DEFAULT_DATE + datetime.timedelta(days=1))
         self.assertTrue(drs[1].state == State.SUCCESS)
 
         dag.clear()
@@ -132,9 +145,8 @@ class BackfillJobTest(unittest.TestCase):
         logger = logging.getLogger('BackfillJobTest.test_backfill_examples')
         dags = [
             dag for dag in self.dagbag.dags.values()
-            if 'example_dags' in dag.full_filepath
-            and dag.dag_id not in skip_dags
-            ]
+            if 'example_dags' in dag.full_filepath and dag.dag_id not in skip_dags
+        ]
 
         for dag in dags:
             dag.clear(
@@ -242,6 +254,27 @@ class SchedulerJobTest(unittest.TestCase):
 
     def setUp(self):
         self.dagbag = DagBag()
+        session = settings.Session()
+        session.query(models.ImportError).delete()
+        session.commit()
+
+    @staticmethod
+    def run_single_scheduler_loop_with_no_dags(dags_folder):
+        """
+        Utility function that runs a single scheduler loop without actually
+        changing/scheduling any dags. This is useful to simulate the other side effects of
+        running a scheduler loop, e.g. to see what parse errors there are in the
+        dags_folder.
+
+        :param dags_folder: the directory to traverse
+        :type directory: str
+        """
+        scheduler = SchedulerJob(
+            dag_id='this_dag_doesnt_exist',  # We don't want to actually run anything
+            num_runs=1,
+            subdir=os.path.join(dags_folder))
+        scheduler.heartrate = 0
+        scheduler.run()
 
     @provide_session
     def evaluate_dagrun(
@@ -783,7 +816,7 @@ class SchedulerJobTest(unittest.TestCase):
         # Recreated part of the scheduler here, to kick off tasks -> executor
         for ti_key in queue:
             task = dag.get_task(ti_key[1])
-            ti = models.TaskInstance(task, ti_key[2])
+            ti = TI(task, ti_key[2])
             # Task starts out in the scheduled state. All tasks in the
             # scheduled state will be sent to the executor
             ti.state = State.SCHEDULED
@@ -887,7 +920,7 @@ class SchedulerJobTest(unittest.TestCase):
             # try to schedule the above DAG repeatedly.
             scheduler = SchedulerJob(num_runs=1,
                                      executor=executor,
-                                     subdir=os.path.join(models.DAGS_FOLDER,
+                                     subdir=os.path.join(settings.DAGS_FOLDER,
                                                          "no_dags.py"))
             scheduler.heartrate = 0
             scheduler.run()
@@ -898,6 +931,109 @@ class SchedulerJobTest(unittest.TestCase):
 
         do_schedule()
         self.assertEquals(2, len(executor.queued_tasks))
+
+    def test_retry_still_in_executor(self):
+        """
+        Checks if the scheduler does not put a task in limbo, when a task is retried
+        but is still present in the executor.
+        """
+        executor = TestExecutor()
+        dagbag = DagBag(executor=executor)
+        dagbag.dags.clear()
+        dagbag.executor = executor
+
+        dag = DAG(
+            dag_id='test_retry_still_in_executor',
+            start_date=DEFAULT_DATE,
+            schedule_interval="@once")
+        dag_task1 = BashOperator(
+            task_id='test_retry_handling_op',
+            bash_command='exit 1',
+            retries=1,
+            dag=dag,
+            owner='airflow')
+
+        dag.clear()
+        dag.is_subdag = False
+
+        session = settings.Session()
+        orm_dag = DagModel(dag_id=dag.dag_id)
+        orm_dag.is_paused = False
+        session.merge(orm_dag)
+        session.commit()
+
+        dagbag.bag_dag(dag=dag, root_dag=dag, parent_dag=dag)
+
+        @mock.patch('airflow.models.DagBag', return_value=dagbag)
+        @mock.patch('airflow.models.DagBag.collect_dags')
+        def do_schedule(function, function2):
+            # Use a empty file since the above mock will return the
+            # expected DAGs. Also specify only a single file so that it doesn't
+            # try to schedule the above DAG repeatedly.
+            scheduler = SchedulerJob(num_runs=1,
+                                     executor=executor,
+                                     subdir=os.path.join(settings.DAGS_FOLDER,
+                                                         "no_dags.py"))
+            scheduler.heartrate = 0
+            scheduler.run()
+
+        do_schedule()
+        self.assertEquals(1, len(executor.queued_tasks))
+
+        def run_with_error(task):
+            try:
+                task.run()
+            except AirflowException:
+                pass
+
+        ti_tuple = six.next(six.itervalues(executor.queued_tasks))
+        (command, priority, queue, ti) = ti_tuple
+        ti.task = dag_task1
+
+        # fail execution
+        run_with_error(ti)
+        self.assertEqual(ti.state, State.UP_FOR_RETRY)
+        self.assertEqual(ti.try_number, 1)
+
+        ti.refresh_from_db(lock_for_update=True, session=session)
+        ti.state = State.SCHEDULED
+        session.merge(ti)
+        session.commit()
+
+        # do not schedule
+        do_schedule()
+        self.assertTrue(executor.has_task(ti))
+        ti.refresh_from_db()
+        self.assertEqual(ti.state, State.SCHEDULED)
+
+        # now the executor has cleared and it should be allowed the re-queue
+        executor.queued_tasks.clear()
+        do_schedule()
+        ti.refresh_from_db()
+        self.assertEqual(ti.state, State.QUEUED)
+
+    @unittest.skipUnless("INTEGRATION" in os.environ, "Can only run end to end")
+    def test_retry_handling_job(self):
+        """
+        Integration test of the scheduler not accidentally resetting
+        the try_numbers for a task
+        """
+        dag = self.dagbag.get_dag('test_retry_handling_job')
+        dag_task1 = dag.get_task("test_retry_handling_op")
+        dag.clear()
+
+        scheduler = SchedulerJob(dag_id=dag.dag_id,
+                                 num_runs=1)
+        scheduler.heartrate = 0
+        scheduler.run()
+
+        session = settings.Session()
+        ti = session.query(TI).filter(TI.dag_id==dag.dag_id,
+                                      TI.task_id==dag_task1.task_id).first()
+
+        # make sure the counter has increased
+        self.assertEqual(ti.try_number, 2)
+        self.assertEqual(ti.state, State.UP_FOR_RETRY)
 
     def test_scheduler_run_duration(self):
         """
@@ -920,7 +1056,7 @@ class SchedulerJobTest(unittest.TestCase):
         logging.info("Test ran in %.2fs, expected %.2fs",
                      run_duration,
                      expected_run_duration)
-        assert run_duration - expected_run_duration < 5.0
+        self.assertLess(run_duration - expected_run_duration, 5.0)
 
     def test_dag_with_system_exit(self):
         """
@@ -929,7 +1065,7 @@ class SchedulerJobTest(unittest.TestCase):
 
         dag_id = 'exit_test_dag'
         dag_ids = [dag_id]
-        dag_directory = os.path.join(models.DAGS_FOLDER,
+        dag_directory = os.path.join(settings.DAGS_FOLDER,
                                      "..",
                                      "dags_with_system_exit")
         dag_file = os.path.join(dag_directory,
@@ -1002,3 +1138,236 @@ class SchedulerJobTest(unittest.TestCase):
             running_date = 'Except'
 
         self.assertEqual(execution_date, running_date, 'Running Date must match Execution Date')
+
+    def test_dag_catchup_option(self):
+        """
+        Test to check that a DAG with catchup = False only schedules beginning now, not back to the start date
+        """
+
+        now = datetime.datetime.now()
+        six_hours_ago_to_the_hour = (now - datetime.timedelta(hours=6)).replace(minute=0, second=0, microsecond=0)
+        three_minutes_ago = now - datetime.timedelta(minutes=3)
+        two_hours_and_three_minutes_ago = three_minutes_ago - datetime.timedelta(hours=2)
+
+        START_DATE = six_hours_ago_to_the_hour
+        DAG_NAME1 = 'no_catchup_test1'
+        DAG_NAME2 = 'no_catchup_test2'
+        DAG_NAME3 = 'no_catchup_test3'
+
+        default_args = {
+            'owner': 'airflow',
+            'depends_on_past': False,
+            'start_date': START_DATE
+
+        }
+        dag1 = DAG(DAG_NAME1,
+                  schedule_interval='* * * * *',
+                  max_active_runs=1,
+                  default_args=default_args
+                  )
+
+        default_catchup = configuration.getboolean('scheduler', 'catchup_by_default')
+        # Test configs have catchup by default ON
+
+        self.assertEqual(default_catchup, True)
+
+        # Correct default?
+        self.assertEqual(dag1.catchup, True)
+
+        dag2 = DAG(DAG_NAME2,
+                  schedule_interval='* * * * *',
+                  max_active_runs=1,
+                  catchup=False,
+                  default_args=default_args
+                  )
+
+        run_this_1 = DummyOperator(task_id='run_this_1', dag=dag2)
+        run_this_2 = DummyOperator(task_id='run_this_2', dag=dag2)
+        run_this_2.set_upstream(run_this_1)
+        run_this_3 = DummyOperator(task_id='run_this_3', dag=dag2)
+        run_this_3.set_upstream(run_this_2)
+
+        session = settings.Session()
+        orm_dag = DagModel(dag_id=dag2.dag_id)
+        session.merge(orm_dag)
+        session.commit()
+        session.close()
+
+        scheduler = SchedulerJob()
+        dag2.clear()
+
+        dr = scheduler.create_dag_run(dag2)
+
+        # We had better get a dag run
+        self.assertIsNotNone(dr)
+
+        # The DR should be scheduled in the last 3 minutes, not 6 hours ago
+        self.assertGreater(dr.execution_date, three_minutes_ago)
+
+        # The DR should be scheduled BEFORE now
+        self.assertLess(dr.execution_date, datetime.datetime.now())
+
+        dag3 = DAG(DAG_NAME3,
+                   schedule_interval='@hourly',
+                   max_active_runs=1,
+                   catchup=False,
+                   default_args=default_args
+                   )
+
+        run_this_1 = DummyOperator(task_id='run_this_1', dag=dag3)
+        run_this_2 = DummyOperator(task_id='run_this_2', dag=dag3)
+        run_this_2.set_upstream(run_this_1)
+        run_this_3 = DummyOperator(task_id='run_this_3', dag=dag3)
+        run_this_3.set_upstream(run_this_2)
+
+        session = settings.Session()
+        orm_dag = DagModel(dag_id=dag3.dag_id)
+        session.merge(orm_dag)
+        session.commit()
+        session.close()
+
+        scheduler = SchedulerJob()
+        dag3.clear()
+
+        dr = None
+        dr = scheduler.create_dag_run(dag3)
+
+        # We had better get a dag run
+        self.assertIsNotNone(dr)
+
+        # The DR should be scheduled in the last two hours, not 6 hours ago
+        self.assertGreater(dr.execution_date, two_hours_and_three_minutes_ago)
+
+        # The DR should be scheduled BEFORE now
+        self.assertLess(dr.execution_date, datetime.datetime.now())
+
+    def test_add_unparseable_file_before_sched_start_creates_import_error(self):
+        try:
+            dags_folder = mkdtemp()
+            unparseable_filename = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+            with open(unparseable_filename, 'w') as unparseable_file:
+                unparseable_file.writelines(UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 1)
+        import_error = import_errors[0]
+        self.assertEqual(import_error.filename,
+                         unparseable_filename)
+        self.assertEqual(import_error.stacktrace,
+                         "invalid syntax ({}, line 1)".format(TEMP_DAG_FILENAME))
+
+    def test_add_unparseable_file_after_sched_start_creates_import_error(self):
+        try:
+            dags_folder = mkdtemp()
+            unparseable_filename = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+
+            with open(unparseable_filename, 'w') as unparseable_file:
+                unparseable_file.writelines(UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 1)
+        import_error = import_errors[0]
+        self.assertEqual(import_error.filename,
+                         unparseable_filename)
+        self.assertEqual(import_error.stacktrace,
+                         "invalid syntax ({}, line 1)".format(TEMP_DAG_FILENAME))
+
+    def test_no_import_errors_with_parseable_dag(self):
+        try:
+            dags_folder = mkdtemp()
+            parseable_filename = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+
+            with open(parseable_filename, 'w') as parseable_file:
+                parseable_file.writelines(PARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 0)
+
+    def test_new_import_error_replaces_old(self):
+        try:
+            dags_folder = mkdtemp()
+            unparseable_filename = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+
+            # Generate original import error
+            with open(unparseable_filename, 'w') as unparseable_file:
+                unparseable_file.writelines(UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+
+            # Generate replacement import error (the error will be on the second line now)
+            with open(unparseable_filename, 'w') as unparseable_file:
+                unparseable_file.writelines(
+                    PARSEABLE_DAG_FILE_CONTENTS +
+                    os.linesep +
+                    UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 1)
+        import_error = import_errors[0]
+        self.assertEqual(import_error.filename,
+                         unparseable_filename)
+        self.assertEqual(import_error.stacktrace,
+                         "invalid syntax ({}, line 2)".format(TEMP_DAG_FILENAME))
+
+    def test_remove_error_clears_import_error(self):
+        try:
+            dags_folder = mkdtemp()
+            filename_to_parse = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+
+            # Generate original import error
+            with open(filename_to_parse, 'w') as file_to_parse:
+                file_to_parse.writelines(UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+
+            # Remove the import error from the file
+            with open(filename_to_parse, 'w') as file_to_parse:
+                file_to_parse.writelines(
+                    PARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 0)
+
+    def test_remove_file_clears_import_error(self):
+        try:
+            dags_folder = mkdtemp()
+            filename_to_parse = os.path.join(dags_folder, TEMP_DAG_FILENAME)
+
+            # Generate original import error
+            with open(filename_to_parse, 'w') as file_to_parse:
+                file_to_parse.writelines(UNPARSEABLE_DAG_FILE_CONTENTS)
+            self.run_single_scheduler_loop_with_no_dags(dags_folder)
+        finally:
+            shutil.rmtree(dags_folder)
+
+        # Rerun the scheduler once the dag file has been removed
+        self.run_single_scheduler_loop_with_no_dags(dags_folder)
+
+        session = settings.Session()
+        import_errors = session.query(models.ImportError).all()
+
+        self.assertEqual(len(import_errors), 0)
