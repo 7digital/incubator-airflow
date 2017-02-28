@@ -30,7 +30,11 @@ standard_library.install_aliases()
 
 from builtins import str
 from collections import OrderedDict
-from configparser import ConfigParser
+try: #3.4
+    from configparser import ConfigParser
+except AirflowConfigException as e: #2.7
+    print e
+    from ConfigParser import ConfigParser
 
 from .exceptions import AirflowConfigException
 
