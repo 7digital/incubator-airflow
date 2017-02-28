@@ -32,7 +32,7 @@ from builtins import str
 from collections import OrderedDict
 try: #3.4
     from configparser import ConfigParser
-except AirflowConfigException as e: #2.7
+except Exception as e: #2.7
     from ConfigParser import ConfigParser
 
 from .exceptions import AirflowConfigException
