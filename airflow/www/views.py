@@ -15,6 +15,7 @@
 
 from past.builtins import basestring, unicode
 
+import ast
 import os
 import pkg_resources
 import socket
@@ -168,7 +169,7 @@ def nobr_f(v, c, m, p):
 
 def label_link(v, c, m, p):
     try:
-        default_params = eval(m.default_params)
+        default_params = ast.literal_eval(m.default_params)
     except:
         default_params = {}
     url = url_for(
@@ -230,8 +231,8 @@ def data_profiling_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if (
-                    current_app.config['LOGIN_DISABLED'] or
-                    (not current_user.is_anonymous() and current_user.data_profiling())
+            current_app.config['LOGIN_DISABLED'] or
+            (not current_user.is_anonymous() and current_user.data_profiling())
         ):
             return f(*args, **kwargs)
         else:
@@ -311,7 +312,7 @@ class Airflow(BaseView):
 
         # Processing templated fields
         try:
-            args = eval(chart.default_params)
+            args = ast.literal_eval(chart.default_params)
             if type(args) is not type(dict()):
                 raise AirflowException('Not a dict')
         except:
@@ -496,26 +497,24 @@ class Airflow(BaseView):
 
     @expose('/task_stats')
     def task_stats(self):
-        task_ids = []
-        dag_ids = []
-        for dag in dagbag.dags.values():
-            task_ids += dag.task_ids
-            if not dag.is_subdag:
-                dag_ids.append(dag.dag_id)
-
         TI = models.TaskInstance
         DagRun = models.DagRun
+        Dag = models.DagModel
         session = Session()
 
         LastDagRun = (
             session.query(DagRun.dag_id, sqla.func.max(DagRun.execution_date).label('execution_date'))
+            .join(Dag, Dag.dag_id == DagRun.dag_id)
             .filter(DagRun.state != State.RUNNING)
+            .filter(Dag.is_active == True)
             .group_by(DagRun.dag_id)
             .subquery('last_dag_run')
         )
         RunningDagRun = (
             session.query(DagRun.dag_id, DagRun.execution_date)
+            .join(Dag, Dag.dag_id == DagRun.dag_id)
             .filter(DagRun.state == State.RUNNING)
+            .filter(Dag.is_active == True)
             .subquery('running_dag_run')
         )
 
@@ -526,16 +525,12 @@ class Airflow(BaseView):
             .join(LastDagRun, and_(
                 LastDagRun.c.dag_id == TI.dag_id,
                 LastDagRun.c.execution_date == TI.execution_date))
-            .filter(TI.task_id.in_(task_ids))
-            .filter(TI.dag_id.in_(dag_ids))
         )
         RunningTI = (
             session.query(TI.dag_id.label('dag_id'), TI.state.label('state'))
             .join(RunningDagRun, and_(
                 RunningDagRun.c.dag_id == TI.dag_id,
                 RunningDagRun.c.execution_date == TI.execution_date))
-            .filter(TI.task_id.in_(task_ids))
-            .filter(TI.dag_id.in_(dag_ids))
         )
 
         UnionTI = union_all(LastTI, RunningTI).alias('union_ti')

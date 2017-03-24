@@ -11,14 +11,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-include NOTICE
-include LICENSE
-include DISCLAIMER
-include CHANGELOG.txt
-include README.md
-graft airflow/www/templates
-graft airflow/www/static
-include airflow/alembic.ini
-graft scripts/systemd
-graft scripts/upstart
-graft airflow/config_templates
+python:
+    pip_install: true
+    extra_requirements:
+        - doc
+        - docker
+        - gcp_api
+        - emr 

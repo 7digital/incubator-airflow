@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -10,15 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from datetime import datetime
 
-include NOTICE
-include LICENSE
-include DISCLAIMER
-include CHANGELOG.txt
-include README.md
-graft airflow/www/templates
-graft airflow/www/static
-include airflow/alembic.ini
-graft scripts/systemd
-graft scripts/upstart
-graft airflow/config_templates
+from airflow.models import DAG
+from airflow.operators.dummy_operator import DummyOperator
+
+DEFAULT_DATE = datetime(2016, 1, 1)
+
+args = {
+    'owner': 'airflow',
+    'start_date': DEFAULT_DATE,
+}
+
+dag = DAG(dag_id='test_localtaskjob_double_trigger', default_args=args)
+task = DummyOperator(
+    task_id='test_localtaskjob_double_trigger_task',
+    dag=dag)
