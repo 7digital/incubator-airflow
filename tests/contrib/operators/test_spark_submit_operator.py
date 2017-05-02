@@ -15,6 +15,7 @@
 
 import unittest
 import datetime
+import sys
 
 from airflow import DAG, configuration
 from airflow.contrib.operators.spark_submit_operator import SparkSubmitOperator
@@ -23,6 +24,7 @@ DEFAULT_DATE = datetime.datetime(2017, 1, 1)
 
 
 class TestSparkSubmitOperator(unittest.TestCase):
+
     _config = {
         'conf': {
             'parquet.compression': 'SNAPPY'
@@ -30,6 +32,7 @@ class TestSparkSubmitOperator(unittest.TestCase):
         'files': 'hive-site.xml',
         'py_files': 'sample_library.py',
         'jars': 'parquet.jar',
+        'total_executor_cores':4,
         'executor_cores': 4,
         'executor_memory': '22g',
         'keytab': 'privileged_user.keytab',
@@ -37,10 +40,21 @@ class TestSparkSubmitOperator(unittest.TestCase):
         'name': 'spark-job',
         'num_executors': 10,
         'verbose': True,
-        'application': 'test_application.py'
+        'application': 'test_application.py',
+        'driver_memory': '3g',
+        'java_class': 'com.foo.bar.AppMain',
+        'application_args': [
+            '-f foo',
+            '--bar bar'
+        ]
     }
 
     def setUp(self):
+
+        if sys.version_info[0] == 3:
+            raise unittest.SkipTest('TestSparkSubmitOperator won\'t work with '
+                                    'python3. No need to test anything here')
+
         configuration.load_test_config()
         args = {
             'owner': 'airflow',
@@ -62,6 +76,7 @@ class TestSparkSubmitOperator(unittest.TestCase):
         self.assertEqual(self._config['files'], operator._files)
         self.assertEqual(self._config['py_files'], operator._py_files)
         self.assertEqual(self._config['jars'], operator._jars)
+        self.assertEqual(self._config['total_executor_cores'], operator._total_executor_cores)
         self.assertEqual(self._config['executor_cores'], operator._executor_cores)
         self.assertEqual(self._config['executor_memory'], operator._executor_memory)
         self.assertEqual(self._config['keytab'], operator._keytab)
@@ -69,6 +84,11 @@ class TestSparkSubmitOperator(unittest.TestCase):
         self.assertEqual(self._config['name'], operator._name)
         self.assertEqual(self._config['num_executors'], operator._num_executors)
         self.assertEqual(self._config['verbose'], operator._verbose)
+        self.assertEqual(self._config['java_class'], operator._java_class)
+        self.assertEqual(self._config['driver_memory'], operator._driver_memory)
+        self.assertEqual(self._config['application_args'], operator._application_args)
+
+
 
 
 if __name__ == '__main__':

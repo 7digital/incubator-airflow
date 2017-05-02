@@ -30,6 +30,7 @@ import functools
 import getpass
 import imp
 import importlib
+import itertools
 import inspect
 import zipfile
 import jinja2
@@ -543,6 +544,8 @@ class Connection(Base):
         ('mesos_framework-id', 'Mesos Framework ID'),
         ('jira', 'JIRA',),
         ('redis', 'Redis',),
+        ('wasb', 'Azure Blob Storage'),
+        ('databricks', 'Databricks',),
     ]
 
     def __init__(
@@ -678,6 +681,9 @@ class Connection(Base):
             elif self.conn_type == 'redis':
                 from airflow.contrib.hooks.redis_hook import RedisHook
                 return RedisHook(redis_conn_id=self.conn_id)
+            elif self.conn_type == 'wasb':
+                from airflow.contrib.hooks.wasb_hook import WasbHook
+                return WasbHook(wasb_conn_id=self.conn_id)
         except:
             pass
 
@@ -730,13 +736,14 @@ class TaskInstance(Base):
     authority and single source of truth around what tasks have run and the
     state they are in.
 
-    The SqlAchemy model doesn't have a SqlAlchemy foreign key to the task or
+    The SqlAlchemy model doesn't have a SqlAlchemy foreign key to the task or
     dag model deliberately to have more control over transactions.
 
     Database transactions on this table should insure double triggers and
     any confusion around what task instances are or aren't ready to run
     even while multiple schedulers may be firing task instances.
     """
+
 
     __tablename__ = "task_instance"
 
@@ -890,7 +897,7 @@ class TaskInstance(Base):
         :type execution_date: datetime
         :param mark_success: Whether to mark the task as successful
         :type mark_success: bool
-        :param ignore_all_deps: Ignore all ignoreable dependencies.
+        :param ignore_all_deps: Ignore all ignorable dependencies.
             Overrides the other ignore_* parameters.
         :type ignore_all_deps: boolean
         :param ignore_depends_on_past: Ignore depends_on_past parameter of DAGs
@@ -1180,7 +1187,21 @@ class TaskInstance(Base):
         """
         delay = self.task.retry_delay
         if self.task.retry_exponential_backoff:
-            delay_backoff_in_seconds = delay.total_seconds() ** self.try_number
+            min_backoff = int(delay.total_seconds() * (2 ** (self.try_number - 2)))
+            # deterministic per task instance
+            hash = int(hashlib.sha1("{}#{}#{}#{}".format(self.dag_id, self.task_id,
+                self.execution_date, self.try_number).encode('utf-8')).hexdigest(), 16)
+            # between 0.5 * delay * (2^retry_number) and 1.0 * delay * (2^retry_number)
+            modded_hash = min_backoff + hash % min_backoff
+            # timedelta has a maximum representable value. The exponentiation
+            # here means this value can be exceeded after a certain number
+            # of tries (around 50 if the initial delay is 1s, even fewer if
+            # the delay is larger). Cap the value here before creating a
+            # timedelta object so the operation doesn't fail.
+            delay_backoff_in_seconds = min(
+                modded_hash,
+                timedelta.max.total_seconds() - 1
+            )
             delay = timedelta(seconds=delay_backoff_in_seconds)
             if self.task.max_retry_delay:
                 delay = min(self.task.max_retry_delay, delay)
@@ -1245,7 +1266,7 @@ class TaskInstance(Base):
         """
         Runs the task instance.
 
-        :param verbose: whether to turn on more verbose loggin
+        :param verbose: whether to turn on more verbose logging
         :type verbose: boolean
         :param ignore_all_deps: Ignore all of the non-critical dependencies, just runs
         :type ignore_all_deps: boolean
@@ -1887,9 +1908,9 @@ class BaseOperator(object):
         objects to the task instance and is documented under the macros
         section of the API.
     :type on_failure_callback: callable
-    :param on_retry_callback: much like the ``on_failure_callback`` excepts
+    :param on_retry_callback: much like the ``on_failure_callback`` except
         that it is executed when retries occur.
-    :param on_success_callback: much like the ``on_failure_callback`` excepts
+    :param on_success_callback: much like the ``on_failure_callback`` except
         that it is executed when the task succeeds.
     :type on_success_callback: callable
     :param trigger_rule: defines the rule by which dependencies are applied
@@ -1909,7 +1930,7 @@ class BaseOperator(object):
 
     # For derived classes to define which fields will get jinjaified
     template_fields = []
-    # Defines wich files extensions to look for in the templated fields
+    # Defines which files extensions to look for in the templated fields
     template_ext = []
     # Defines the color in the UI
     ui_color = '#fff'
@@ -2162,7 +2183,7 @@ class BaseOperator(object):
         """
         Returns the list of dependencies for the operator. These differ from execution
         context dependencies in that they are specific to tasks and can be
-        extended/overriden by subclasses.
+        extended/overridden by subclasses.
         """
         return {
             NotInRetryPeriodDep(),
@@ -2232,11 +2253,13 @@ class BaseOperator(object):
         memo[id(self)] = result
 
         for k, v in list(self.__dict__.items()):
-            if k not in ('user_defined_macros', 'params'):
+            if k not in ('user_defined_macros', 'user_defined_filters', 'params'):
                 setattr(result, k, copy.deepcopy(v, memo))
         result.params = self.params
         if hasattr(self, 'user_defined_macros'):
             result.user_defined_macros = self.user_defined_macros
+        if hasattr(self, 'user_defined_filters'):
+            result.user_defined_filters = self.user_defined_filters
         return result
 
     def render_template_from_field(self, attr, content, context, jinja_env):
@@ -2627,6 +2650,12 @@ class DAG(BaseDag, LoggingMixin):
         templates related to this DAG. Note that you can pass any
         type of object here.
     :type user_defined_macros: dict
+    :param user_defined_filters: a dictionary of filters that will be exposed
+        in your jinja templates. For example, passing
+        ``dict(hello=lambda name: 'Hello %s' % name)`` to this argument allows
+        you to ``{{ 'world' | hello }}`` in all jinja templates related to
+        this DAG.
+    :type user_defined_filters: dict
     :param default_args: A dictionary of default parameters to be used
         as constructor keyword parameters when initialising operators.
         Note that operators have the same hook, and precede those defined
@@ -2667,6 +2696,7 @@ class DAG(BaseDag, LoggingMixin):
             full_filepath=None,
             template_searchpath=None,
             user_defined_macros=None,
+            user_defined_filters=None,
             default_args=None,
             concurrency=configuration.getint('core', 'dag_concurrency'),
             max_active_runs=configuration.getint(
@@ -2679,6 +2709,7 @@ class DAG(BaseDag, LoggingMixin):
             params=None):
 
         self.user_defined_macros = user_defined_macros
+        self.user_defined_filters = user_defined_filters
         self.default_args = default_args or {}
         self.params = params or {}
 
@@ -2720,6 +2751,7 @@ class DAG(BaseDag, LoggingMixin):
         self.default_view = default_view
         self.orientation = orientation
         self.catchup = catchup
+        self.is_subdag = False  # DagBag.bag_dag() will set this to True if appropriate
 
         self.partial = False
 
@@ -2821,7 +2853,7 @@ class DAG(BaseDag, LoggingMixin):
         """
         Returns the last dag run for this dag, None if there was none.
         Last dag run can be any type of run eg. scheduled or backfilled.
-        Overriden DagRuns are ignored
+        Overridden DagRuns are ignored
         """
         DR = DagRun
         qry = session.query(DR).filter(
@@ -3016,7 +3048,7 @@ class DAG(BaseDag, LoggingMixin):
     def get_template_env(self):
         """
         Returns a jinja2 Environment while taking into account the DAGs
-        template_searchpath and user_defined_macros
+        template_searchpath, user_defined_macros and user_defined_filters
         """
         searchpath = [self.folder]
         if self.template_searchpath:
@@ -3028,6 +3060,8 @@ class DAG(BaseDag, LoggingMixin):
             cache_size=0)
         if self.user_defined_macros:
             env.globals.update(self.user_defined_macros)
+        if self.user_defined_filters:
+            env.filters.update(self.user_defined_filters)
 
         return env
 
@@ -3068,7 +3102,7 @@ class DAG(BaseDag, LoggingMixin):
 
         Heavily inspired by:
         http://blog.jupo.org/2012/04/06/topological-sorting-acyclic-directed-graphs/
-        :returns: list of tasks in topological order
+        :return: list of tasks in topological order
         """
 
         # copy the the tasks so we leave it unmodified
@@ -3119,7 +3153,7 @@ class DAG(BaseDag, LoggingMixin):
         for dr in drs:
             dr.state = state
             dirty_ids.append(dr.dag_id)
-        DagStat.clean_dirty(dirty_ids, session=session)
+        DagStat.update(dirty_ids, session=session)
 
     def clear(
             self, start_date=None, end_date=None,
@@ -3194,10 +3228,11 @@ class DAG(BaseDag, LoggingMixin):
         result = cls.__new__(cls)
         memo[id(self)] = result
         for k, v in list(self.__dict__.items()):
-            if k not in ('user_defined_macros', 'params'):
+            if k not in ('user_defined_macros', 'user_defined_filters', 'params'):
                 setattr(result, k, copy.deepcopy(v, memo))
 
         result.user_defined_macros = self.user_defined_macros
+        result.user_defined_filters = self.user_defined_filters
         result.params = self.params
         return result
 
@@ -3319,8 +3354,8 @@ class DAG(BaseDag, LoggingMixin):
         """
         Add a list of tasks to the DAG
 
-        :param task: a lit of tasks you want to add
-        :type task: list of tasks
+        :param tasks: a lit of tasks you want to add
+        :type tasks: list of tasks
         """
         for task in tasks:
             self.add_task(task)
@@ -3413,6 +3448,9 @@ class DAG(BaseDag, LoggingMixin):
             state=state
         )
         session.add(run)
+
+        DagStat.set_dirty(dag_id=self.dag_id, session=session)
+
         session.commit()
 
         run.dag = self
@@ -3422,12 +3460,7 @@ class DAG(BaseDag, LoggingMixin):
         run.verify_integrity(session=session)
 
         run.refresh_from_db()
-        DagStat.set_dirty(self.dag_id, session=session)
 
-        # add a placeholder row into DagStat table
-        if not session.query(DagStat).filter(DagStat.dag_id == self.dag_id).first():
-            session.add(DagStat(dag_id=self.dag_id, state=state, count=0, dirty=True))
-        session.commit()
         return run
 
     @staticmethod
@@ -3503,6 +3536,34 @@ class DAG(BaseDag, LoggingMixin):
             dag.is_active = False
             session.merge(dag)
             session.commit()
+
+    @staticmethod
+    @provide_session
+    def get_num_task_instances(dag_id, task_ids, states=None, session=None):
+        """
+        Returns the number of task instances in the given DAG.
+
+        :param session: ORM session
+        :param dag_id: ID of the DAG to get the task concurrency of
+        :type dag_id: unicode
+        :param task_ids: A list of valid task IDs for the given DAG
+        :type task_ids: list[unicode]
+        :param states: A list of states to filter by if supplied
+        :type states: list[state]
+        :return: The number of running tasks
+        :rtype: int
+        """
+        qry = session.query(func.count(TaskInstance.task_id)).filter(
+            TaskInstance.dag_id == dag_id,
+            TaskInstance.task_id.in_(task_ids))
+        if states is not None:
+            if None in states:
+                qry = qry.filter(or_(
+                    TaskInstance.state.in_(states),
+                    TaskInstance.state.is_(None)))
+            else:
+                qry = qry.filter(TaskInstance.state.in_(states))
+        return qry.scalar()
 
 
 class Chart(Base):
@@ -3608,10 +3669,10 @@ class Variable(Base):
 
         :param key: Dict key for this Variable
         :type key: String
-        :param: default: Default value to set and return if the variable
+        :param default: Default value to set and return if the variable
         isn't already in the DB
-        :type: default: Mixed
-        :param: deserialize_json: Store this as a JSON encoded value in the DB
+        :type default: Mixed
+        :param deserialize_json: Store this as a JSON encoded value in the DB
          and un-encode it when retrieving a value
         :return: Mixed
         """
@@ -3810,7 +3871,7 @@ class DagStat(Base):
     count = Column(Integer, default=0)
     dirty = Column(Boolean, default=False)
 
-    def __init__(self, dag_id, state, count, dirty=False):
+    def __init__(self, dag_id, state, count=0, dirty=False):
         self.dag_id = dag_id
         self.state = state
         self.count = count
@@ -3819,50 +3880,104 @@ class DagStat(Base):
     @staticmethod
     @provide_session
     def set_dirty(dag_id, session=None):
-        for dag in session.query(DagStat).filter(DagStat.dag_id == dag_id):
-            dag.dirty = True
-        session.commit()
+        """
+        :param dag_id: the dag_id to mark dirty
+        :param session: database session
+        :return: 
+        """
+        DagStat.create(dag_id=dag_id, session=session)
+
+        try:
+            stats = session.query(DagStat).filter(
+                DagStat.dag_id == dag_id
+            ).with_for_update().all()
+
+            for stat in stats:
+                stat.dirty = True
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logging.warning("Could not update dag stats for {}".format(dag_id))
+            logging.exception(e)
 
     @staticmethod
     @provide_session
-    def clean_dirty(dag_ids, session=None):
+    def update(dag_ids=None, dirty_only=True, session=None):
         """
-        Cleans out the dirty/out-of-sync rows from dag_stats table
+        Updates the stats for dirty/out-of-sync dags
 
-        :param dag_ids: dag_ids that may be dirty
+        :param dag_ids: dag_ids to be updated
         :type dag_ids: list
-        :param full_query: whether to check dag_runs for new drs not in dag_stats
-        :type full_query: bool
+        :param dirty_only: only updated for marked dirty, defaults to True
+        :type dirty_only: bool
+        :param session: db session to use
+        :type session: Session
         """
-        # avoid querying with an empty IN clause
-        if not dag_ids:
-            return
+        if dag_ids is not None:
+            dag_ids = set(dag_ids)
 
-        dag_ids = set(dag_ids)
+        try:
+            qry = session.query(DagStat)
 
-        qry = (
-            session.query(DagStat)
-            .filter(and_(DagStat.dag_id.in_(dag_ids), DagStat.dirty == True))
-        )
+            if dag_ids is not None:
+                qry = qry.filter(DagStat.dag_id.in_(dag_ids))
+            if dirty_only:
+                qry = qry.filter(DagStat.dirty == True)
 
-        dirty_ids = {dag.dag_id for dag in qry.all()}
-        qry.delete(synchronize_session='fetch')
-        session.commit()
+            qry = qry.with_for_update().all()
 
-        # avoid querying with an empty IN clause
-        if not dirty_ids:
-            return
+            ids = set([dag_stat.dag_id for dag_stat in qry])
 
-        qry = (
-            session.query(DagRun.dag_id, DagRun.state, func.count('*'))
-            .filter(DagRun.dag_id.in_(dirty_ids))
-            .group_by(DagRun.dag_id, DagRun.state)
-        )
+            # avoid querying with an empty IN clause
+            if len(ids) == 0:
+                session.commit()
+                return
 
-        for dag_id, state, count in qry:
-            session.add(DagStat(dag_id=dag_id, state=state, count=count))
+            dagstat_states = set(itertools.product(ids, State.dag_states))
+            qry = (
+                session.query(DagRun.dag_id, DagRun.state, func.count('*'))
+                .filter(DagRun.dag_id.in_(ids))
+                .group_by(DagRun.dag_id, DagRun.state)
+            )
 
-        session.commit()
+            counts = {(dag_id, state): count for dag_id, state, count in qry}
+            for dag_id, state in dagstat_states:
+                count = 0
+                if (dag_id, state) in counts:
+                    count = counts[(dag_id, state)]
+
+                session.merge(
+                    DagStat(dag_id=dag_id, state=state, count=count, dirty=False)
+                )
+
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logging.warning("Could not update dag stat table")
+            logging.exception(e)
+
+    @staticmethod
+    @provide_session
+    def create(dag_id, session=None):
+        """
+        Creates the missing states the stats table for the dag specified 
+        
+        :param dag_id: dag id of the dag to create stats for
+        :param session: database session
+        :return: 
+        """
+        # unfortunately sqlalchemy does not know upsert
+        qry = session.query(DagStat).filter(DagStat.dag_id == dag_id).all()
+        states = [dag_stat.state for dag_stat in qry]
+        for state in State.dag_states:
+            if state not in states:
+                try:
+                    session.merge(DagStat(dag_id=dag_id, state=state))
+                    session.commit()
+                except Exception as e:
+                    session.rollback()
+                    logging.warning("Could not create stat record")
+                    logging.exception(e)
 
 
 class DagRun(Base):
@@ -3908,10 +4023,11 @@ class DagRun(Base):
     def set_state(self, state):
         if self._state != state:
             self._state = state
-            # something really weird goes on here: if you try to close the session
-            # dag runs will end up detached
-            session = settings.Session()
-            DagStat.set_dirty(self.dag_id, session=session)
+            if self.dag_id is not None:
+                # something really weird goes on here: if you try to close the session
+                # dag runs will end up detached
+                session = settings.Session()
+                DagStat.set_dirty(self.dag_id, session=session)
 
     @declared_attr
     def state(self):
@@ -3944,7 +4060,8 @@ class DagRun(Base):
     @staticmethod
     @provide_session
     def find(dag_id=None, run_id=None, execution_date=None,
-             state=None, external_trigger=None, session=None):
+             state=None, external_trigger=None, no_backfills=False,
+             session=None):
         """
         Returns a set of dag runs for the given search criteria.
         :param dag_id: the dag_id to find dag runs for
@@ -3957,6 +4074,9 @@ class DagRun(Base):
         :type state: State
         :param external_trigger: whether this dag run is externally triggered
         :type external_trigger: bool
+        :param no_backfills: return no backfills (True), return all (False). 
+        Defaults to False
+        :type no_backfills: bool
         :param session: database session
         :type session: Session
         """
@@ -3974,8 +4094,12 @@ class DagRun(Base):
                 qry = qry.filter(DR.execution_date == execution_date)
         if state:
             qry = qry.filter(DR.state == state)
-        if external_trigger:
+        if external_trigger is not None:
             qry = qry.filter(DR.external_trigger == external_trigger)
+        if no_backfills:
+            # in order to prevent a circular dependency
+            from airflow.jobs import BackfillJob
+            qry = qry.filter(DR.run_id.notlike(BackfillJob.ID_PREFIX + '%'))
 
         dr = qry.order_by(DR.execution_date).all()
 
@@ -4063,7 +4187,7 @@ class DagRun(Base):
         """
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
-        :returns State:
+        :return: State
         """
 
         dag = self.get_dag()
@@ -4167,26 +4291,6 @@ class DagRun(Base):
         session.commit()
 
     @staticmethod
-    def get_running_tasks(session, dag_id, task_ids):
-        """
-        Returns the number of tasks running in the given DAG.
-
-        :param session: ORM session
-        :param dag_id: ID of the DAG to get the task concurrency of
-        :type dag_id: unicode
-        :param task_ids: A list of valid task IDs for the given DAG
-        :type task_ids: list[unicode]
-        :return: The number of running tasks
-        :rtype: int
-        """
-        qry = session.query(func.count(TaskInstance.task_id)).filter(
-            TaskInstance.dag_id == dag_id,
-            TaskInstance.task_id.in_(task_ids),
-            TaskInstance.state == State.RUNNING,
-        )
-        return qry.scalar()
-
-    @staticmethod
     def get_run(session, dag_id, execution_date):
         """
         :param dag_id: DAG ID
@@ -4210,6 +4314,29 @@ class DagRun(Base):
             return True
 
         return False
+
+    @classmethod
+    @provide_session
+    def get_latest_runs(cls, session):
+        """Returns the latest running DagRun for each DAG. """
+        subquery = (
+            session
+            .query(
+                cls.dag_id,
+                func.max(cls.execution_date).label('execution_date'))
+            .filter(cls.state == State.RUNNING)
+            .group_by(cls.dag_id)
+            .subquery()
+        )
+        dagruns = (
+            session
+            .query(cls)
+            .join(subquery,
+                  and_(cls.dag_id == subquery.c.dag_id,
+                       cls.execution_date == subquery.c.execution_date))
+            .all()
+        )
+        return dagruns
 
 
 class Pool(Base):

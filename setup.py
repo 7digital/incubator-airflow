@@ -18,6 +18,7 @@ from setuptools.command.test import test as TestCommand
 import imp
 import logging
 import os
+import pip
 import sys
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,21 @@ def write_version(filename=os.path.join(*['airflow',
         a.write(text)
 
 
+def check_previous():
+    installed_packages = ([package.project_name for package
+                           in pip.get_installed_distributions()])
+    if 'airflow' in installed_packages:
+        print("An earlier non-apache version of Airflow was installed, "
+              "please uninstall it first. Then reinstall.")
+        sys.exit(1)
+
+
 async = [
     'greenlet>=0.4.9',
     'eventlet>= 0.9.7',
     'gevent>=0.13'
 ]
+azure = ['azure-storage>=0.34.0']
 celery = [
     'celery>=3.1.17',
     'flower>=0.7.3'
@@ -115,6 +126,7 @@ crypto = ['cryptography>=0.9.3']
 dask = [
     'distributed>=1.15.2, <2'
     ]
+databricks = ['requests>=2.5.1, <3']
 datadog = ['datadog>=0.14.0']
 doc = [
     'sphinx>=1.2.3',
@@ -190,9 +202,10 @@ devel_all = devel + all_dbs + doc + samba + s3 + slack + crypto + oracle + docke
 
 
 def do_setup():
+    check_previous()
     write_version()
     setup(
-        name='airflow',
+        name='apache-airflow',
         description='Programmatically author, schedule and monitor data pipelines',
         license='Apache License 2.0',
         version=version,
@@ -203,6 +216,7 @@ def do_setup():
         scripts=['airflow/bin/airflow'],
         install_requires=[
             'alembic>=0.8.3, <0.9',
+            'bleach==2.0.0',
             'configparser>=3.5.0, <3.6.0',
             'croniter>=0.3.8, <0.4',
             'dill>=0.2.2, <0.3',
@@ -236,11 +250,13 @@ def do_setup():
             'all': devel_all,
             'all_dbs': all_dbs,
             'async': async,
+            'azure': azure,
             'celery': celery,
             'cgroups': cgroups,
             'cloudant': cloudant,
             'crypto': crypto,
             'dask': dask,
+            'databricks': databricks,
             'datadog': datadog,
             'devel': devel_minreq,
             'devel_hadoop': devel_hadoop,

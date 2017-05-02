@@ -24,6 +24,8 @@ from datetime import datetime, timedelta
 import dateutil.parser
 import copy
 import json
+import bleach
+from collections import defaultdict
 
 import inspect
 from textwrap import dedent
@@ -42,7 +44,7 @@ from flask_admin.tools import iterdecode
 from flask_login import flash
 from flask._compat import PY2
 
-import jinja2
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 import markdown
 import nvd3
 
@@ -102,11 +104,12 @@ if conf.getboolean('webserver', 'FILTER_BY_OWNER'):
 
 
 def dag_link(v, c, m, p):
+    dag_id = bleach.clean(m.dag_id)
     url = url_for(
         'airflow.graph',
-        dag_id=m.dag_id)
+        dag_id=dag_id)
     return Markup(
-        '<a href="{url}">{m.dag_id}</a>'.format(**locals()))
+        '<a href="{}">{}</a>'.format(url, dag_id))
 
 
 def log_url_formatter(v, c, m, p):
@@ -117,20 +120,22 @@ def log_url_formatter(v, c, m, p):
 
 
 def task_instance_link(v, c, m, p):
+    dag_id = bleach.clean(m.dag_id)
+    task_id = bleach.clean(m.task_id)
     url = url_for(
         'airflow.task',
-        dag_id=m.dag_id,
-        task_id=m.task_id,
+        dag_id=dag_id,
+        task_id=task_id,
         execution_date=m.execution_date.isoformat())
     url_root = url_for(
         'airflow.graph',
-        dag_id=m.dag_id,
-        root=m.task_id,
+        dag_id=dag_id,
+        root=task_id,
         execution_date=m.execution_date.isoformat())
     return Markup(
         """
         <span style="white-space: nowrap;">
-        <a href="{url}">{m.task_id}</a>
+        <a href="{url}">{task_id}</a>
         <a href="{url_root}" title="Filter on this task and upstream">
         <span class="glyphicon glyphicon-filter" style="margin-left: 0px;"
             aria-hidden="true"></span>
@@ -324,8 +329,9 @@ class Airflow(BaseView):
         request_dict = {k: request.args.get(k) for k in request.args}
         args.update(request_dict)
         args['macros'] = macros
-        sql = jinja2.Template(chart.sql).render(**args)
-        label = jinja2.Template(chart.label).render(**args)
+        sandbox = ImmutableSandboxedEnvironment()
+        sql = sandbox.from_string(chart.sql).render(**args)
+        label = sandbox.from_string(chart.label).render(**args)
         payload['sql_html'] = Markup(highlight(
             sql,
             lexers.SqlLexer(),  # Lexer call
@@ -467,6 +473,8 @@ class Airflow(BaseView):
     def dag_stats(self):
         ds = models.DagStat
         session = Session()
+
+        ds.update()
 
         qry = (
             session.query(ds.dag_id, ds.state, ds.count)
@@ -1407,25 +1415,38 @@ class Airflow(BaseView):
         cum_chart = nvd3.lineChart(
             name="cumLineChart", x_is_date=True, height=600, width="1200")
 
-        y = {}
-        x = {}
-        cum_y = {}
-        for task in dag.tasks:
-            y[task.task_id] = []
-            x[task.task_id] = []
-            cum_y[task.task_id] = []
-            for ti in task.get_task_instances(session, start_date=min_date,
-                                              end_date=base_date):
-                if ti.duration:
-                    dttm = wwwutils.epoch(ti.execution_date)
-                    x[ti.task_id].append(dttm)
-                    y[ti.task_id].append(float(ti.duration))
-                    fails = session.query(models.TaskFail).filter_by(
-                        task_id=ti.task_id,
-                        dag_id=ti.dag_id,
-                        execution_date=ti.execution_date).all()
-                    fails_total = sum([f.duration for f in fails])
-                    cum_y[ti.task_id].append(float(ti.duration + fails_total))
+        y = defaultdict(list)
+        x = defaultdict(list)
+        cum_y = defaultdict(list)
+
+        tis = dag.get_task_instances(
+            session, start_date=min_date, end_date=base_date)
+        TF = models.TaskFail
+        ti_fails = (
+            session
+                .query(TF)
+                .filter(
+                    TF.dag_id == dag.dag_id,
+                    TF.execution_date >= min_date,
+                    TF.execution_date <= base_date,
+                    TF.task_id.in_([t.task_id for t in dag.tasks]))
+                .all()
+        )
+
+        fails_totals = defaultdict(int)
+        for tf in ti_fails:
+            dict_key = (tf.dag_id, tf.task_id, tf.execution_date)
+            fails_totals[dict_key] += tf.duration
+
+        for ti in tis:
+            if ti.duration:
+                dttm = wwwutils.epoch(ti.execution_date)
+                x[ti.task_id].append(dttm)
+                y[ti.task_id].append(float(ti.duration))
+                fails_dict_key = (ti.dag_id, ti.task_id, ti.execution_date)
+                fails_total = fails_totals[fails_dict_key]
+                cum_y[ti.task_id].append(float(ti.duration + fails_total))
+
         # determine the most relevant time unit for the set of task instance
         # durations for the DAG
         y_unit = infer_time_unit([d for t in y.values() for d in t])
@@ -1443,8 +1464,6 @@ class Airflow(BaseView):
                                     y=scale_time_units(cum_y[task.task_id],
                                     cum_y_unit))
 
-        tis = dag.get_task_instances(
-            session, start_date=min_date, end_date=base_date)
         dates = sorted(list({ti.execution_date for ti in tis}))
         max_date = max([ti.execution_date for ti in tis]) if dates else None
 
@@ -1568,7 +1587,7 @@ class Airflow(BaseView):
             for ti in task.get_task_instances(session, start_date=min_date,
                                               end_date=base_date):
                 ts = ti.execution_date
-                if dag.schedule_interval:
+                if dag.schedule_interval and dag.following_schedule(ts):
                     ts = dag.following_schedule(ts)
                 if ti.end_date:
                     dttm = wwwutils.epoch(ti.execution_date)
@@ -2263,9 +2282,8 @@ class DagRunModelView(ModelViewOnly):
         session.commit()
         dirty_ids = []
         for row in deleted:
-            models.DagStat.set_dirty(row.dag_id, session=session)
             dirty_ids.append(row.dag_id)
-        models.DagStat.clean_dirty(dirty_ids, session=session)
+        models.DagStat.update(dirty_ids, dirty_only=False, session=session)
         session.close()
 
     @action('set_running', "Set state to 'running'", None)
@@ -2295,7 +2313,7 @@ class DagRunModelView(ModelViewOnly):
                 else:
                     dr.end_date = datetime.now()
             session.commit()
-            models.DagStat.clean_dirty(dirty_ids, session=session)
+            models.DagStat.update(dirty_ids, session=session)
             flash(
                 "{count} dag runs were set to '{target_state}'".format(**locals()))
         except Exception as ex:
@@ -2331,7 +2349,7 @@ class TaskInstanceModelView(ModelViewOnly):
         queued_dttm=datetime_f,
         dag_id=dag_link, duration=duration_f)
     column_searchable_list = ('dag_id', 'task_id', 'state')
-    column_default_sort = ('start_date', True)
+    column_default_sort = ('job_id', True)
     form_choices = {
         'state': [
             ('success', 'success'),
@@ -2529,7 +2547,7 @@ class VersionView(wwwutils.SuperUserMixin, LoggingMixin, BaseView):
     def version(self):
         # Look at the version from setup.py
         try:
-            airflow_version = pkg_resources.require("airflow")[0].version
+            airflow_version = pkg_resources.require("apache-airflow")[0].version
         except Exception as e:
             airflow_version = None
             self.logger.error(e)
