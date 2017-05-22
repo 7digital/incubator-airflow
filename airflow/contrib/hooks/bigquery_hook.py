@@ -24,7 +24,7 @@ import time
 from apiclient.discovery import build, HttpError
 from googleapiclient import errors
 from builtins import range
-from pandas.io.gbq import GbqConnector, \
+from pandas_gbq.gbq import GbqConnector, \
     _parse_data as gbq_parse_data, \
     _check_google_client_version as gbq_check_google_client_version, \
     _test_google_api_imports as gbq_test_google_api_imports
@@ -74,7 +74,7 @@ class BigQueryHook(GoogleCloudBaseHook, DbApiHook):
         """
         raise NotImplementedError()
 
-    def get_pandas_df(self, bql, parameters=None):
+    def get_pandas_df(self, bql, parameters=None, dialect='legacy'):
         """
         Returns a Pandas DataFrame for the results produced by a BigQuery
         query. The DbApiHook method must be overridden because Pandas
@@ -85,10 +85,14 @@ class BigQueryHook(GoogleCloudBaseHook, DbApiHook):
 
         :param bql: The BigQuery SQL to execute.
         :type bql: string
+        :param parameters: The parameters to render the SQL query with (not used, leave to override superclass method)
+        :type parameters: mapping or iterable
+        :param dialect: Dialect of BigQuery SQL – legacy SQL or standard SQL
+        :type dialect: string in {'legacy', 'standard'}, default 'legacy'
         """
         service = self.get_service()
         project = self._get_field('project')
-        connector = BigQueryPandasConnector(project, service)
+        connector = BigQueryPandasConnector(project, service, dialect=dialect)
         schema, pages = connector.run_query(bql)
         dataframe_list = []
 
@@ -136,13 +140,14 @@ class BigQueryPandasConnector(GbqConnector):
     without forcing a three legged OAuth connection. Instead, we can inject
     service account credentials into the binding.
     """
-    def __init__(self, project_id, service, reauth=False, verbose=False):
+    def __init__(self, project_id, service, reauth=False, verbose=False, dialect='legacy'):
         gbq_check_google_client_version()
         gbq_test_google_api_imports()
         self.project_id = project_id
         self.reauth = reauth
         self.service = service
         self.verbose = verbose
+        self.dialect = dialect
 
 
 class BigQueryConnection(object):
@@ -369,6 +374,7 @@ class BigQueryBaseCursor(object):
                  skip_leading_rows=0,
                  write_disposition='WRITE_EMPTY',
                  field_delimiter=',',
+                 max_bad_records=0,
                  schema_update_options=()):
         """
         Executes a BigQuery load command to load data from Google Cloud Storage
@@ -400,6 +406,9 @@ class BigQueryBaseCursor(object):
         :type write_disposition: string
         :param field_delimiter: The delimiter to use when loading from a CSV.
         :type field_delimiter: string
+        :param max_bad_records: The maximum number of bad records that BigQuery can
+            ignore when running the job.
+        :type max_bad_records: int
         :param schema_update_options: Allows the schema of the desitination
             table to be updated as a side effect of the load job.
         :type schema_update_options: list
@@ -472,6 +481,9 @@ class BigQueryBaseCursor(object):
         if source_format == 'CSV':
             configuration['load']['skipLeadingRows'] = skip_leading_rows
             configuration['load']['fieldDelimiter'] = field_delimiter
+
+        if max_bad_records:
+            configuration['load']['maxBadRecords'] = max_bad_records
 
         return self.run_with_configuration(configuration)
 

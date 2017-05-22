@@ -52,7 +52,8 @@ class SqoopHook(BaseHook):
     """
 
     def __init__(self, conn_id='sqoop_default', verbose=False,
-                 num_mappers=None, properties=None):
+                 num_mappers=None, hcatalog_database=None,
+                 hcatalog_table=None, properties=None):
         # No mutable types in the default parameters
         if properties is None:
             properties = {}
@@ -64,12 +65,22 @@ class SqoopHook(BaseHook):
         self.files = connection_parameters.get('files', None)
         self.archives = connection_parameters.get('archives', None)
         self.password_file = connection_parameters.get('password_file', None)
+        self.hcatalog_database = hcatalog_database
+        self.hcatalog_table = hcatalog_table
         self.verbose = verbose
-        self.num_mappers = str(num_mappers)
+        self.num_mappers = num_mappers
         self.properties = properties
 
     def get_conn(self):
         pass
+
+    def cmd_mask_password(self, cmd):
+        try:
+            password_index = cmd.index('--password')
+            cmd[password_index + 1] = 'MASKED'
+        except ValueError:
+            logging.debug("No password in sqoop cmd")
+        return cmd
 
     def Popen(self, cmd, **kwargs):
         """
@@ -79,18 +90,21 @@ class SqoopHook(BaseHook):
         :param kwargs: extra arguments to Popen (see subprocess.Popen)
         :return: handle to subprocess
         """
-        process = subprocess.Popen(cmd,
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE,
-                                   **kwargs)
-        output, stderr = process.communicate()
+        logging.info("Executing command: {}".format(' '.join(cmd)))
+        sp = subprocess.Popen(cmd,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT,
+                              **kwargs)
 
-        if process.returncode != 0:
-            raise AirflowException(
-                "Cannot execute {} on {}. Error code is: {} Output: {}, "
-                "Stderr: {}".format(cmd, self.conn.host, process.returncode,
-                                    output, stderr)
-            )
+        for line in iter(sp.stdout):
+            logging.info(line.strip())
+
+        sp.wait()
+
+        logging.info("Command exited with return code {0}".format(sp.returncode))
+
+        if sp.returncode:
+            raise AirflowException("Sqoop command failed: {}".format(' '.join(cmd)))
 
     def _prepare_command(self, export=False):
         if export:
@@ -117,7 +131,11 @@ class SqoopHook(BaseHook):
         if self.archives:
             connection_cmd += ["-archives", self.archives]
         if self.num_mappers:
-            connection_cmd += ["--num-mappers", self.num_mappers]
+            connection_cmd += ["--num-mappers", str(self.num_mappers)]
+        if self.hcatalog_database:
+            connection_cmd += ["--hcatalog-database", self.hcatalog_database]
+        if self.hcatalog_table:
+            connection_cmd += ["--hcatalog-table", self.hcatalog_table]
 
         for key, value in self.properties.items():
             connection_cmd += ["-D", "{}={}".format(key, value)]
@@ -257,8 +275,10 @@ class SqoopHook(BaseHook):
         if relaxed_isolation:
             cmd += ["--relaxed-isolation"]
 
-        # The required options
-        cmd += ["--export-dir", export_dir]
+        if export_dir:
+            cmd += ["--export-dir", export_dir]
+
+        # The required option
         cmd += ["--table", table]
 
         return cmd

@@ -142,6 +142,7 @@ gcp_api = [
     'google-api-python-client>=1.5.0, <1.6.0',
     'oauth2client>=2.0.2, <2.1.0',
     'PyOpenSSL',
+    'pandas-gbq'
 ]
 hdfs = ['snakebite>=2.7.8']
 webhdfs = ['hdfs[dataframe,avro,kerberos]>=2.0.4']
@@ -157,7 +158,7 @@ mssql = ['pymssql>=2.1.1', 'unicodecsv>=0.14.1']
 mysql = ['mysqlclient>=1.3.6']
 rabbitmq = ['librabbitmq>=1.6.1']
 oracle = ['cx_Oracle>=5.1.2']
-postgres = ['psycopg2>=2.6']
+postgres = ['psycopg2>=2.7.1']
 salesforce = ['simple-salesforce>=0.72']
 s3 = [
     'boto>=2.36.0',
@@ -192,8 +193,8 @@ devel = [
     'moto',
     'nose',
     'nose-ignore-docstring==0.2',
-    'nose-parameterized',
     'nose-timer',
+    'parameterized',
     'rednose'
 ]
 devel_minreq = devel + mysql + doc + password + s3 + cgroups
@@ -225,7 +226,7 @@ def do_setup():
             'flask-cache>=0.13.1, <0.14',
             'flask-login==0.2.11',
             'flask-swagger==0.2.13',
-            'flask-wtf==0.12',
+            'flask-wtf==0.14',
             'funcsigs==1.0.0',
             'future>=0.16.0, <0.17',
             'gitpython>=2.0.2',

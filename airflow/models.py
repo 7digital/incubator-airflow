@@ -60,7 +60,7 @@ from croniter import croniter
 import six
 
 from airflow import settings, utils
-from airflow.executors import DEFAULT_EXECUTOR, LocalExecutor
+from airflow.executors import GetDefaultExecutor, LocalExecutor
 from airflow import configuration
 from airflow.exceptions import AirflowException, AirflowSkipException, AirflowTaskTimeout
 from airflow.dag.base_dag import BaseDag, BaseDagBag
@@ -166,9 +166,12 @@ class DagBag(BaseDagBag, LoggingMixin):
     def __init__(
             self,
             dag_folder=None,
-            executor=DEFAULT_EXECUTOR,
+            executor=None,
             include_examples=configuration.getboolean('core', 'LOAD_EXAMPLES')):
 
+        # do not use default arg in signature, to fix import cycle on plugin load
+        if executor is None:
+            executor = GetDefaultExecutor()
         dag_folder = dag_folder or settings.DAGS_FOLDER
         self.logger.info("Filling up the DagBag from {}".format(dag_folder))
         self.dag_folder = dag_folder
@@ -3037,14 +3040,6 @@ class DAG(BaseDag, LoggingMixin):
         for t in self.tasks:
             t.resolve_template_files()
 
-    def crawl_for_tasks(objects):
-        """
-        Typically called at the end of a script by passing globals() as a
-        parameter. This allows to not explicitly add every single task to the
-        dag explicitly.
-        """
-        raise NotImplementedError("")
-
     def get_template_env(self):
         """
         Returns a jinja2 Environment while taking into account the DAGs
@@ -3088,7 +3083,7 @@ class DAG(BaseDag, LoggingMixin):
         )
         if state:
             tis = tis.filter(TI.state == state)
-        tis = tis.all()
+        tis = tis.order_by(TI.execution_date).all()
         return tis
 
     @property
@@ -3332,8 +3327,21 @@ class DAG(BaseDag, LoggingMixin):
         """
         if not self.start_date and not task.start_date:
             raise AirflowException("Task is missing the start_date parameter")
-        if not task.start_date:
+        # if the task has no start date, assign it the same as the DAG
+        elif not task.start_date:
             task.start_date = self.start_date
+        # otherwise, the task will start on the later of its own start date and
+        # the DAG's start date
+        elif self.start_date:
+            task.start_date = max(task.start_date, self.start_date)
+
+        # if the task has no end date, assign it the same as the dag
+        if not task.end_date:
+            task.end_date = self.end_date
+        # otherwise, the task will end on the earlier of its own end date and
+        # the DAG's end date
+        elif task.end_date and self.end_date:
+            task.end_date = min(task.end_date, self.end_date)
 
         if task.task_id in self.task_dict:
             # TODO: raise an error in Airflow 2.0
@@ -3389,7 +3397,7 @@ class DAG(BaseDag, LoggingMixin):
         if not executor and local:
             executor = LocalExecutor()
         elif not executor:
-            executor = DEFAULT_EXECUTOR
+            executor = GetDefaultExecutor()
         job = BackfillJob(
             self,
             start_date=start_date,
@@ -3883,7 +3891,7 @@ class DagStat(Base):
         """
         :param dag_id: the dag_id to mark dirty
         :param session: database session
-        :return: 
+        :return:
         """
         DagStat.create(dag_id=dag_id, session=session)
 
@@ -3960,11 +3968,11 @@ class DagStat(Base):
     @provide_session
     def create(dag_id, session=None):
         """
-        Creates the missing states the stats table for the dag specified 
-        
+        Creates the missing states the stats table for the dag specified
+
         :param dag_id: dag id of the dag to create stats for
         :param session: database session
-        :return: 
+        :return:
         """
         # unfortunately sqlalchemy does not know upsert
         qry = session.query(DagStat).filter(DagStat.dag_id == dag_id).all()
@@ -4074,7 +4082,7 @@ class DagRun(Base):
         :type state: State
         :param external_trigger: whether this dag run is externally triggered
         :type external_trigger: bool
-        :param no_backfills: return no backfills (True), return all (False). 
+        :param no_backfills: return no backfills (True), return all (False).
         Defaults to False
         :type no_backfills: bool
         :param session: database session
