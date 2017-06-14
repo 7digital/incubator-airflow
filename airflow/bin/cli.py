@@ -19,6 +19,7 @@ import logging
 import reprlib
 
 import os
+import socket
 import subprocess
 import textwrap
 import warnings
@@ -384,6 +385,9 @@ def run(args, dag=None):
             level=settings.LOGGING_LEVEL,
             format=settings.LOG_FORMAT)
 
+    hostname = socket.getfqdn()
+    logging.info("Running on host {}".format(hostname))
+
     if not args.pickle and not dag:
         dag = get_dag(args)
     elif not dag:
@@ -736,7 +740,7 @@ def webserver(args):
     error_logfile = args.error_logfile or conf.get('webserver', 'error_logfile')
     num_workers = args.workers or conf.get('webserver', 'workers')
     worker_timeout = (args.worker_timeout or
-                      conf.get('webserver', 'webserver_worker_timeout'))
+                      conf.get('webserver', 'web_server_worker_timeout'))
     ssl_cert = args.ssl_cert or conf.get('webserver', 'web_server_ssl_cert')
     ssl_key = args.ssl_key or conf.get('webserver', 'web_server_ssl_key')
     if not ssl_cert and ssl_key:

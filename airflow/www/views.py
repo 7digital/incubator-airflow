@@ -58,6 +58,7 @@ import airflow
 from airflow import configuration as conf
 from airflow import models
 from airflow import settings
+from airflow.api.common.experimental.mark_tasks import set_dag_run_state
 from airflow.exceptions import AirflowException
 from airflow.settings import Session
 from airflow.models import XCom, DagRun
@@ -75,6 +76,7 @@ from airflow.utils import logging as log_utils
 from airflow.utils.dates import infer_time_unit, scale_time_units
 from airflow.www import utils as wwwutils
 from airflow.www.forms import DateTimeForm, DateTimeWithNumRunsForm
+from airflow.www.validators import GreaterEqualThan
 from airflow.configuration import AirflowConfigException
 
 QUERY_LIMIT = 100000
@@ -283,6 +285,16 @@ def should_hide_value_for_key(key_name):
     return any(s in key_name for s in DEFAULT_SENSITIVE_VARIABLE_FIELDS) \
            and conf.getboolean('admin', 'hide_sensitive_variable_fields')
 
+
+
+def get_chart_height(dag):
+    """
+    TODO(aoen): See [AIRFLOW-1263] We use the number of tasks in the DAG as a heuristic to
+    approximate the size of generated chart (otherwise the charts are tiny and unreadable
+    when DAGs have a large number of tasks). Ideally nvd3 should allow for dynamic-height
+    charts, that is charts that take up space based on the size of the components within.
+    """
+    return 600 + len(dag.tasks) * 10
 
 class Airflow(BaseView):
 
@@ -1015,6 +1027,36 @@ class Airflow(BaseView):
             "it should start any moment now.".format(dag_id))
         return redirect(origin)
 
+    def _clear_dag_tis(self, dag, start_date, end_date, origin,
+                       recursive=False, confirmed=False):
+        if confirmed:
+            count = dag.clear(
+                start_date=start_date,
+                end_date=end_date,
+                include_subdags=recursive)
+
+            flash("{0} task instances have been cleared".format(count))
+            return redirect(origin)
+
+        tis = dag.clear(
+            start_date=start_date,
+            end_date=end_date,
+            include_subdags=recursive,
+            dry_run=True)
+        if not tis:
+            flash("No task instances to clear", 'error')
+            response = redirect(origin)
+        else:
+            details = "\n".join([str(t) for t in tis])
+
+            response = self.render(
+                'airflow/confirm.html',
+                message=("Here's the list of task instances you are about "
+                         "to clear:"),
+                details=details)
+
+        return response
+
     @expose('/clear')
     @login_required
     @wwwutils.action_logging
@@ -1041,34 +1083,28 @@ class Airflow(BaseView):
 
         end_date = execution_date if not future else None
         start_date = execution_date if not past else None
-        if confirmed:
-            count = dag.clear(
-                start_date=start_date,
-                end_date=end_date,
-                include_subdags=recursive)
 
-            flash("{0} task instances have been cleared".format(count))
-            return redirect(origin)
-        else:
-            tis = dag.clear(
-                start_date=start_date,
-                end_date=end_date,
-                include_subdags=recursive,
-                dry_run=True)
-            if not tis:
-                flash("No task instances to clear", 'error')
-                response = redirect(origin)
-            else:
-                details = "\n".join([str(t) for t in tis])
+        return self._clear_dag_tis(dag, start_date, end_date, origin,
+                                   recursive=recursive, confirmed=confirmed)
 
-                response = self.render(
-                    'airflow/confirm.html',
-                    message=(
-                        "Here's the list of task instances you are about "
-                        "to clear:"),
-                    details=details,)
+    @expose('/dagrun_clear')
+    @login_required
+    @wwwutils.action_logging
+    @wwwutils.notify_owner
+    def dagrun_clear(self):
+        dag_id = request.args.get('dag_id')
+        task_id = request.args.get('task_id')
+        origin = request.args.get('origin')
+        execution_date = request.args.get('execution_date')
+        confirmed = request.args.get('confirmed') == "true"
 
-            return response
+        dag = dagbag.get_dag(dag_id)
+        execution_date = dateutil.parser.parse(execution_date)
+        start_date = execution_date
+        end_date = execution_date
+
+        return self._clear_dag_tis(dag, start_date, end_date, origin,
+                                   recursive=True, confirmed=confirmed)
 
     @expose('/blocked')
     @login_required
@@ -1092,6 +1128,44 @@ class Airflow(BaseView):
                 'max_active_runs': max_active_runs,
             })
         return wwwutils.json_response(payload)
+
+    @expose('/dagrun_success')
+    @login_required
+    @wwwutils.action_logging
+    @wwwutils.notify_owner
+    def dagrun_success(self):
+        dag_id = request.args.get('dag_id')
+        execution_date = request.args.get('execution_date')
+        confirmed = request.args.get('confirmed') == 'true'
+        origin = request.args.get('origin')
+
+        if not execution_date:
+            flash('Invalid execution date', 'error')
+            return redirect(origin)
+
+        execution_date = dateutil.parser.parse(execution_date)
+        dag = dagbag.get_dag(dag_id)
+
+        if not dag:
+            flash('Cannot find DAG: {}'.format(dag_id), 'error')
+            return redirect(origin)
+
+        new_dag_state = set_dag_run_state(dag, execution_date, state=State.SUCCESS,
+                                          commit=confirmed)
+
+        if confirmed:
+            flash('Marked success on {} task instances'.format(len(new_dag_state)))
+            return redirect(origin)
+
+        else:
+            details = '\n'.join([str(t) for t in new_dag_state])
+
+            response = self.render('airflow/confirm.html',
+                                   message=("Here's the list of task instances you are "
+                                            "about to mark as successful:"),
+                                   details=details)
+
+            return response
 
     @expose('/success')
     @login_required
@@ -1411,10 +1485,12 @@ class Airflow(BaseView):
                 include_upstream=True,
                 include_downstream=False)
 
+
+        chart_height = get_chart_height(dag)
         chart = nvd3.lineChart(
-            name="lineChart", x_is_date=True, height=600, width="1200")
+            name="lineChart", x_is_date=True, height=chart_height, width="1200")
         cum_chart = nvd3.lineChart(
-            name="cumLineChart", x_is_date=True, height=600, width="1200")
+            name="cumLineChart", x_is_date=True, height=chart_height, width="1200")
 
         y = defaultdict(list)
         x = defaultdict(list)
@@ -1516,8 +1592,10 @@ class Airflow(BaseView):
                 include_upstream=True,
                 include_downstream=False)
 
+        chart_height = get_chart_height(dag)
         chart = nvd3.lineChart(
-            name="lineChart", x_is_date=True, y_axis_format='d', height=600, width="1200")
+            name="lineChart", x_is_date=True, y_axis_format='d', height=chart_height,
+            width="1200")
 
         for task in dag.tasks:
             y = []
@@ -1578,8 +1656,9 @@ class Airflow(BaseView):
                 include_upstream=True,
                 include_downstream=False)
 
+        chart_height = get_chart_height(dag)
         chart = nvd3.lineChart(
-            name="lineChart", x_is_date=True, height=600, width="1200")
+            name="lineChart", x_is_date=True, height=chart_height, width="1200")
         y = {}
         x = {}
         for task in dag.tasks:
@@ -1622,7 +1701,7 @@ class Airflow(BaseView):
             'airflow/chart.html',
             dag=dag,
             chart=chart.htmlcontent,
-            height="700px",
+            height=str(chart_height + 100) + "px",
             demo_mode=conf.getboolean('webserver', 'demo_mode'),
             root=root,
             form=form,
@@ -1986,6 +2065,13 @@ class PoolModelView(wwwutils.SuperUserMixin, AirflowModelView):
     column_formatters = dict(
         pool=pool_link, used_slots=fused_slots, queued_slots=fqueued_slots)
     named_filter_urls = True
+    form_args = {
+        'pool': {
+            'validators': [
+                validators.DataRequired(),
+            ]
+        }
+    }
 
 
 class SlaMissModelView(wwwutils.SuperUserMixin, ModelViewOnly):
@@ -2117,7 +2203,7 @@ chart_mapping = (
 chart_mapping = dict(chart_mapping)
 
 
-class KnowEventView(wwwutils.DataProfilingMixin, AirflowModelView):
+class KnownEventView(wwwutils.DataProfilingMixin, AirflowModelView):
     verbose_name = "known event"
     verbose_name_plural = "known events"
     form_columns = (
@@ -2126,13 +2212,54 @@ class KnowEventView(wwwutils.DataProfilingMixin, AirflowModelView):
         'start_date',
         'end_date',
         'reported_by',
-        'description')
+        'description',
+    )
+    form_args = {
+        'label': {
+            'validators': [
+                validators.DataRequired(),
+            ],
+        },
+        'event_type': {
+            'validators': [
+                validators.DataRequired(),
+            ],
+        },
+        'start_date': {
+            'validators': [
+                validators.DataRequired(),
+            ],
+        },
+        'end_date': {
+            'validators': [
+                validators.DataRequired(),
+                GreaterEqualThan(fieldname='start_date'),
+            ],
+        },
+        'reported_by': {
+            'validators': [
+                validators.DataRequired(),
+            ],
+        }
+    }
     column_list = (
-        'label', 'event_type', 'start_date', 'end_date', 'reported_by')
+        'label',
+        'event_type',
+        'start_date',
+        'end_date',
+        'reported_by',
+    )
     column_default_sort = ("start_date", True)
+    column_sortable_list = (
+        'label',
+        ('event_type', 'event_type.know_event_type'),
+        'start_date',
+        'end_date',
+        ('reported_by', 'reported_by.username'),
+    )
 
 
-class KnowEventTypeView(wwwutils.DataProfilingMixin, AirflowModelView):
+class KnownEventTypeView(wwwutils.DataProfilingMixin, AirflowModelView):
     pass
 
 
@@ -2166,6 +2293,7 @@ class VariableView(wwwutils.DataProfilingMixin, AirflowModelView):
     column_list = ('key', 'val', 'is_encrypted',)
     column_filters = ('key', 'val')
     column_searchable_list = ('key', 'val')
+    column_default_sort = ('key', False)
     form_widget_args = {
         'is_encrypted': {'disabled': True},
         'val': {
