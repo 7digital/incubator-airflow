@@ -40,12 +40,14 @@ _hooks = {
     'qubole_hook': ['QuboleHook'],
     'gcs_hook': ['GoogleCloudStorageHook'],
     'datastore_hook': ['DatastoreHook'],
+    'gcp_cloudml_hook': ['CloudMLHook'],
     'gcp_dataproc_hook': ['DataProcHook'],
     'gcp_dataflow_hook': ['DataFlowHook'],
     'spark_submit_operator': ['SparkSubmitOperator'],
     'cloudant_hook': ['CloudantHook'],
     'fs_hook': ['FSHook'],
-    'wasb_hook': ['WasbHook']
+    'wasb_hook': ['WasbHook'],
+    'gcp_pubsub_hook': ['PubSubHook']
 }
 
 import os as _os

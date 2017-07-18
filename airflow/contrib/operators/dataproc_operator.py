@@ -19,6 +19,7 @@ import time
 from airflow.contrib.hooks.gcp_dataproc_hook import DataProcHook
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
+from airflow.version import version
 from googleapiclient.errors import HttpError
 
 
@@ -226,8 +227,13 @@ class DataprocClusterCreateOperator(BaseOperator):
                 },
                 'isPreemptible': True
             }
-        if self.labels:
-            cluster_data['labels'] = self.labels
+
+        cluster_data['labels'] = self.labels if self.labels else {}
+        # Dataproc labels must conform to the following regex:
+        # [a-z]([-a-z0-9]*[a-z0-9])? (current airflow version string follows
+        # semantic versioning spec: x.y.z).
+        cluster_data['labels'].update({'airflow-version':
+                                       'v' + version.replace('.', '-')})
         if self.storage_bucket:
             cluster_data['config']['configBucket'] = self.storage_bucket
         if self.metadata:
@@ -470,7 +476,8 @@ class DataProcHiveOperator(BaseOperator):
     @apply_defaults
     def __init__(
             self,
-            query,
+            query=None,
+            query_uri=None,
             variables=None,
             job_name='{{task.task_id}}_{{ds_nodash}}',
             dataproc_cluster='cluster-1',
@@ -485,6 +492,8 @@ class DataProcHiveOperator(BaseOperator):
 
         :param query: The query or reference to the query file (q extension).
         :type query: string
+        :param query_uri: The uri of a hive script on Cloud Storage.
+        :type query_uri: string
         :param variables: Map of named parameters for the query.
         :type variables: dict
         :param job_name: The job name used in the DataProc cluster. This name by default
@@ -510,6 +519,7 @@ class DataProcHiveOperator(BaseOperator):
         self.gcp_conn_id = gcp_conn_id
         self.delegate_to = delegate_to
         self.query = query
+        self.query_uri = query_uri
         self.variables = variables
         self.job_name = job_name
         self.dataproc_cluster = dataproc_cluster
@@ -523,7 +533,10 @@ class DataProcHiveOperator(BaseOperator):
         job = hook.create_job_template(self.task_id, self.dataproc_cluster, "hiveJob",
                                        self.dataproc_properties)
 
-        job.add_query(self.query)
+        if self.query is None:
+            job.add_query_uri(self.query_uri)
+        else:
+            job.add_query(self.query)
         job.add_variables(self.variables)
         job.add_jar_file_uris(self.dataproc_jars)
         job.set_job_name(self.job_name)
@@ -542,7 +555,8 @@ class DataProcSparkSqlOperator(BaseOperator):
     @apply_defaults
     def __init__(
             self,
-            query,
+            query=None,
+            query_uri=None,
             variables=None,
             job_name='{{task.task_id}}_{{ds_nodash}}',
             dataproc_cluster='cluster-1',
@@ -557,6 +571,8 @@ class DataProcSparkSqlOperator(BaseOperator):
 
         :param query: The query or reference to the query file (q extension).
         :type query: string
+        :param query_uri: The uri of a spark sql script on Cloud Storage.
+        :type query_uri: string
         :param variables: Map of named parameters for the query.
         :type variables: dict
         :param job_name: The job name used in the DataProc cluster. This name by default
@@ -582,6 +598,7 @@ class DataProcSparkSqlOperator(BaseOperator):
         self.gcp_conn_id = gcp_conn_id
         self.delegate_to = delegate_to
         self.query = query
+        self.query_uri = query_uri
         self.variables = variables
         self.job_name = job_name
         self.dataproc_cluster = dataproc_cluster
@@ -595,7 +612,10 @@ class DataProcSparkSqlOperator(BaseOperator):
         job = hook.create_job_template(self.task_id, self.dataproc_cluster, "sparkSqlJob",
                                        self.dataproc_properties)
 
-        job.add_query(self.query)
+        if self.query is None:
+            job.add_query_uri(self.query_uri)
+        else:
+            job.add_query(self.query)
         job.add_variables(self.variables)
         job.add_jar_file_uris(self.dataproc_jars)
         job.set_job_name(self.job_name)
