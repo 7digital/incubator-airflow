@@ -34,7 +34,7 @@
         kafka: {
           hidden_fields: ['login', 'password', 'extra'],
           relabeling: {'schema': 'Topic'},
-        },        
+        },
         cloudant: {
             hidden_fields: ['port', 'extra'],
             relabeling: {
