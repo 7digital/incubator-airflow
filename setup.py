@@ -114,6 +114,7 @@ async = [
     'eventlet>= 0.9.7',
     'gevent>=0.13'
 ]
+athena = ['PyAthenaJDBC>1.0.9']
 azure = ['azure-storage>=0.34.0']
 celery = [
     'celery>=3.1.17',
@@ -184,7 +185,7 @@ qds = ['qds-sdk>=1.9.6']
 cloudant = ['cloudant>=0.5.9,<2.0'] # major update coming soon, clamp to 0.x
 redis = ['redis>=2.10.5']
 
-all_dbs = postgres + mysql + hive + mssql + hdfs + vertica + cloudant
+all_dbs = postgres + mysql + hive + mssql + hdfs + vertica + cloudant + athena
 devel = [
     'click',
     'freezegun',
@@ -252,6 +253,7 @@ def do_setup():
             'all': devel_all,
             'all_dbs': all_dbs,
             'async': async,
+            'athena': athena,
             'azure': azure,
             'celery': celery,
             'cgroups': cgroups,
