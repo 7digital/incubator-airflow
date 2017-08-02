@@ -35,6 +35,14 @@
           hidden_fields: ['login', 'password', 'extra'],
           relabeling: {'schema': 'Topic'},
         },
+        athena: {
+          hidden_fields: ['port', 'schema'],
+          relabeling: {
+              'login': 'Access Key',
+              'password': 'Secret Key',
+              'host': 'Region'
+              },
+        },
         cloudant: {
             hidden_fields: ['port', 'extra'],
             relabeling: {

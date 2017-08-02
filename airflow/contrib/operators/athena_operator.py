@@ -38,18 +38,17 @@ class AthenaOperator(BaseOperator):
     ui_color = '#ededed'
 
     @apply_defaults
-    def __init__(
-        self, sql, athena_conn_id='athena_default', parameters=None, schema_name=None, *args, **kwargs):
+    def __init__(self, sql, athena_conn_id='athena_default', parameters=None, *args, **kwargs):
         super(AthenaOperator, self).__init__(*args, **kwargs)
         self.athena_conn_id = athena_conn_id
         self.sql = sql
         self.parameters = parameters
-        self.schema_name = schema_name
 
     def execute(self, context):
         logging.info('Executing: ' + str(self.sql))
-        hook = AthenaHook(athena_conn_id=self.athena_conn_id,
-                          schema=self.database)
+        hook = AthenaHook(athena_conn_id=self.athena_conn_id)
+
         hook.run(
             self.sql,
-            parameters=self.parameters)
+            parameters=self.parameters
+        )

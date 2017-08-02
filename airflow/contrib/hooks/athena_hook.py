@@ -19,8 +19,6 @@ import pyathenajdbc
 
 from airflow.hooks.dbapi_hook import DbApiHook
 
-logging.getLogger("pyhive").setLevel(logging.INFO)
-
 
 class AthenaException(Exception):
     pass
@@ -43,11 +41,11 @@ class AthenaHook(DbApiHook):
         """Returns a connection object"""
         db = self.get_connection(self.athena_conn_id)
         return pyathenajdbc.connect(
-            s3_staging_dir=db.s3_staging_dir,
-            region_name=db.region_name,
-            schema_name=db.schema,
-            access_key=db.access_key,
-            secret_key=db.secret_key
+            s3_staging_dir=db.extra_dejson.get('s3_staging_dir', None),
+            region_name=db.host,
+            access_key=db.login,
+            secret_key=db.password,
+            catalog=db.extra_dejson.get('catalog', 'hive'),
         )
 
     @staticmethod
