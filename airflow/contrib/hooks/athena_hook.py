@@ -98,7 +98,7 @@ class AthenaHook(DbApiHook):
         except pyathenajdbc.DatabaseError as e:
             raise AthenaException(self._get_pretty_exception_message(e))
         column_descriptions = cursor.description
-        if data:
+        if data is not None:
             df = pandas.DataFrame(data)
             df.columns = [c[0] for c in column_descriptions]
         else:
