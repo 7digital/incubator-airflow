@@ -15,6 +15,7 @@
 
 from __future__ import print_function
 from builtins import zip
+from future.builtins.iterators import zip as izip
 from past.builtins import basestring
 
 import collections
@@ -147,7 +148,7 @@ class HiveCliHook(BaseHook):
         if not d:
             return []
         return as_flattened_list(
-            itertools.izip(
+            izip(
                 ["-hiveconf"] * len(d),
                 ["{}={}".format(k, v) for k, v in d.items()]
                 )
