@@ -22,7 +22,6 @@ import os
 import socket
 import subprocess
 import textwrap
-import warnings
 from importlib import import_module
 
 import argparse
@@ -40,6 +39,7 @@ import threading
 import traceback
 import time
 import psutil
+import re
 
 import airflow
 from airflow import api
@@ -49,11 +49,10 @@ from airflow.exceptions import AirflowException
 from airflow.executors import GetDefaultExecutor
 from airflow.models import (DagModel, DagBag, TaskInstance,
                             DagPickle, DagRun, Variable, DagStat,
-                            Connection)
+                            Connection, DAG)
+
 from airflow.ti_deps.dep_context import (DepContext, SCHEDULER_DEPS)
 from airflow.utils import db as db_utils
-from airflow.utils import logging as logging_utils
-from airflow.utils.file import mkdirs
 from airflow.www.app import cached_app
 
 from sqlalchemy import func
@@ -127,6 +126,19 @@ def get_dag(args):
     return dagbag.dags[args.dag_id]
 
 
+def get_dags(args):
+    if not args.dag_regex:
+        return [get_dag(args)]
+    dagbag = DagBag(process_subdir(args.subdir))
+    matched_dags = [dag for dag in dagbag.dags.values() if re.search(
+        args.dag_id, dag.dag_id)]
+    if not matched_dags:
+        raise AirflowException(
+            'dag_id could not be found with regex: {}. Either the dag did not exist '
+            'or it failed to parse.'.format(args.dag_id))
+    return matched_dags
+
+
 def backfill(args, dag=None):
     logging.basicConfig(
         level=settings.LOGGING_LEVEL,
@@ -164,7 +176,8 @@ def backfill(args, dag=None):
                           conf.getboolean('core', 'donot_pickle')),
             ignore_first_depends_on_past=args.ignore_first_depends_on_past,
             ignore_task_deps=args.ignore_dependencies,
-            pool=args.pool)
+            pool=args.pool,
+            delay_on_limit_secs=args.delay_on_limit)
 
 
 def trigger_dag(args):
@@ -341,61 +354,22 @@ def run(args, dag=None):
     ti = TaskInstance(task, args.execution_date)
     ti.refresh_from_db()
 
-    logging.root.handlers = []
+    logger = logging.getLogger('airflow.task')
     if args.raw:
-        # Output to STDOUT for the parent process to read and log
-        logging.basicConfig(
-            stream=sys.stdout,
-            level=settings.LOGGING_LEVEL,
-            format=settings.LOG_FORMAT)
-    else:
-        # Setting up logging to a file.
+        logger = logging.getLogger('airflow.task.raw')
 
-        # To handle log writing when tasks are impersonated, the log files need to
-        # be writable by the user that runs the Airflow command and the user
-        # that is impersonated. This is mainly to handle corner cases with the
-        # SubDagOperator. When the SubDagOperator is run, all of the operators
-        # run under the impersonated user and create appropriate log files
-        # as the impersonated user. However, if the user manually runs tasks
-        # of the SubDagOperator through the UI, then the log files are created
-        # by the user that runs the Airflow command. For example, the Airflow
-        # run command may be run by the `airflow_sudoable` user, but the Airflow
-        # tasks may be run by the `airflow` user. If the log files are not
-        # writable by both users, then it's possible that re-running a task
-        # via the UI (or vice versa) results in a permission error as the task
-        # tries to write to a log file created by the other user.
-        try_number = ti.try_number
-        log_base = os.path.expanduser(conf.get('core', 'BASE_LOG_FOLDER'))
-        log_relative_dir = logging_utils.get_log_directory(args.dag_id, args.task_id,
-                                                           args.execution_date)
-        directory = os.path.join(log_base, log_relative_dir)
-        # Create the log file and give it group writable permissions
-        # TODO(aoen): Make log dirs and logs globally readable for now since the SubDag
-        # operator is not compatible with impersonation (e.g. if a Celery executor is used
-        # for a SubDag operator and the SubDag operator has a different owner than the
-        # parent DAG)
-        if not os.path.isdir(directory):
-            # Create the directory as globally writable using custom mkdirs
-            # as os.makedirs doesn't set mode properly.
-            mkdirs(directory, 0o775)
-        log_relative = logging_utils.get_log_filename(
-            args.dag_id, args.task_id, args.execution_date, try_number)
-        filename = os.path.join(log_base, log_relative)
-
-        if not os.path.exists(filename):
-            open(filename, "a").close()
-            os.chmod(filename, 0o666)
-
-        logging.basicConfig(
-            filename=filename,
-            level=settings.LOGGING_LEVEL,
-            format=settings.LOG_FORMAT)
+    for handler in logger.handlers:
+        try:
+            handler.set_context(ti)
+        except AttributeError:
+            # Not all handlers need to have context passed in so we ignore
+            # the error when handlers do not have set_context defined.
+            pass
 
     hostname = socket.getfqdn()
     logging.info("Running on host {}".format(hostname))
 
     if args.local:
-        print("Logging into: " + filename)
         run_job = jobs.LocalTaskJob(
             task_instance=ti,
             mark_success=args.mark_success,
@@ -453,43 +427,13 @@ def run(args, dag=None):
     if args.raw:
         return
 
-    # Force the log to flush, and set the handler to go back to normal so we
-    # don't continue logging to the task's log file. The flush is important
-    # because we subsequently read from the log to insert into S3 or Google
-    # cloud storage.
-    logging.root.handlers[0].flush()
-    logging.root.handlers = []
-
-    # store logs remotely
-    remote_base = conf.get('core', 'REMOTE_BASE_LOG_FOLDER')
-
-    # deprecated as of March 2016
-    if not remote_base and conf.get('core', 'S3_LOG_FOLDER'):
-        warnings.warn(
-            'The S3_LOG_FOLDER conf key has been replaced by '
-            'REMOTE_BASE_LOG_FOLDER. Your conf still works but please '
-            'update airflow.cfg to ensure future compatibility.',
-            DeprecationWarning)
-        remote_base = conf.get('core', 'S3_LOG_FOLDER')
-
-    if os.path.exists(filename):
-        # read log and remove old logs to get just the latest additions
-
-        with open(filename, 'r') as logfile:
-            log = logfile.read()
-
-        remote_log_location = os.path.join(remote_base, log_relative)
-        logging.debug("Uploading to remote log location {}".format(remote_log_location))
-        # S3
-        if remote_base.startswith('s3:/'):
-            logging_utils.S3Log().write(log, remote_log_location)
-        # GCS
-        elif remote_base.startswith('gs:/'):
-            logging_utils.GCSLog().write(log, remote_log_location)
-        # Other
-        elif remote_base and remote_base != 'None':
-            logging.error(
-                'Unsupported remote log location: {}'.format(remote_base))
+    # Force the log to flush. The flush is important because we
+    # might subsequently read from the log to insert into S3 or
+    # Google cloud storage. Explicitly close the handler is
+    # needed in order to upload to remote storage services.
+    for handler in logger.handlers:
+        handler.flush()
+        handler.close()
 
 
 def task_failed_deps(args):
@@ -599,15 +543,17 @@ def clear(args):
     logging.basicConfig(
         level=settings.LOGGING_LEVEL,
         format=settings.SIMPLE_LOG_FORMAT)
-    dag = get_dag(args)
+    dags = get_dags(args)
 
     if args.task_regex:
-        dag = dag.sub_dag(
-            task_regex=args.task_regex,
-            include_downstream=args.downstream,
-            include_upstream=args.upstream,
-        )
-    dag.clear(
+        for idx, dag in enumerate(dags):
+            dags[idx] = dag.sub_dag(
+                task_regex=args.task_regex,
+                include_downstream=args.downstream,
+                include_upstream=args.upstream)
+
+    DAG.clear_dags(
+        dags,
         start_date=args.start_date,
         end_date=args.end_date,
         only_failed=args.only_failed,
@@ -1217,6 +1163,14 @@ class CLIFactory(object):
                 "DO respect depends_on_past)."),
             "store_true"),
         'pool': Arg(("--pool",), "Resource pool to use"),
+        'delay_on_limit': Arg(
+            ("--delay_on_limit",),
+            help=("Amount of time in seconds to wait when the limit "
+                  "on maximum active dag runs (max_active_runs) has "
+                  "been reached before trying to execute a dag run "
+                  "again."),
+            type=float,
+            default=1.0),
         # list_tasks
         'tree': Arg(("-t", "--tree"), "Tree view", "store_true"),
         # list_dags
@@ -1237,6 +1191,9 @@ class CLIFactory(object):
         'exclude_subdags': Arg(
             ("-x", "--exclude_subdags"),
             "Exclude subdags", "store_true"),
+        'dag_regex': Arg(
+            ("-dx", "--dag_regex"),
+            "Search dag_id as regex instead of exact string", "store_true"),
         # trigger_dag
         'run_id': Arg(("-r", "--run_id"), "Helps to identify this run"),
         'conf': Arg(
@@ -1471,7 +1428,7 @@ class CLIFactory(object):
                 'dag_id', 'task_regex', 'start_date', 'end_date',
                 'mark_success', 'local', 'donot_pickle', 'include_adhoc',
                 'bf_ignore_dependencies', 'bf_ignore_first_depends_on_past',
-                'subdir', 'pool', 'dry_run')
+                'subdir', 'pool', 'delay_on_limit', 'dry_run')
         }, {
             'func': list_tasks,
             'help': "List the tasks within a DAG",
@@ -1482,7 +1439,7 @@ class CLIFactory(object):
             'args': (
                 'dag_id', 'task_regex', 'start_date', 'end_date', 'subdir',
                 'upstream', 'downstream', 'no_confirm', 'only_failed',
-                'only_running', 'exclude_subdags'),
+                'only_running', 'exclude_subdags', 'dag_regex'),
         }, {
             'func': pause,
             'help': "Pause a DAG",
