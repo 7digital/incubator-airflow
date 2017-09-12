@@ -554,6 +554,7 @@ class Connection(Base):
         ('oracle', 'Oracle',),
         ('vertica', 'Vertica',),
         ('presto', 'Presto',),
+        ('athena', 'Athena',),
         ('s3', 'S3',),
         ('samba', 'Samba',),
         ('sqlite', 'Sqlite',),
@@ -675,6 +676,9 @@ class Connection(Base):
             elif self.conn_type == 'presto':
                 from airflow.hooks.presto_hook import PrestoHook
                 return PrestoHook(presto_conn_id=self.conn_id)
+            elif self.conn_type == 'athena':
+                from airflow.contrib.hooks.athena_hook import AthenaHook
+                return AthenaHook(athena_conn_id=self.conn_id)
             elif self.conn_type == 'hiveserver2':
                 from airflow.hooks.hive_hooks import HiveServer2Hook
                 return HiveServer2Hook(hiveserver2_conn_id=self.conn_id)
