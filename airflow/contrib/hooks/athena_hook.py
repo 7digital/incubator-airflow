@@ -14,6 +14,7 @@
 
 from builtins import str
 import logging
+import os
 
 import pyathenajdbc
 
@@ -43,8 +44,8 @@ class AthenaHook(DbApiHook):
         return pyathenajdbc.connect(
             s3_staging_dir=db.extra_dejson.get('s3_staging_dir', None),
             region_name=db.host,
-            access_key=db.login,
-            secret_key=db.password,
+            access_key=os.getenv('AWS_ACCESS_KEY_ID', db.login),
+            secret_key=os.getenv('AWS_SECRET_ACCESS_KEY', db.password),
             catalog=db.extra_dejson.get('catalog', 'hive'),
         )
 
