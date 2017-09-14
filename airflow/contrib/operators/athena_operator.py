@@ -39,21 +39,21 @@ class AthenaOperator(BaseOperator):
     ui_color = '#ededed'
 
     @apply_defaults
-    def __init__(self, sqls, athena_conn_id='athena_default', parameters=None, *args, **kwargs):
+    def __init__(self, sql, athena_conn_id='athena_default', parameters=None, *args, **kwargs):
         super(AthenaOperator, self).__init__(*args, **kwargs)
         self.athena_conn_id = athena_conn_id
-        if type(sqls) is not list:
-            raise AirflowException('sqls must be a list of statements')
-        self.sqls = sqls
+        if type(sql) is not list:
+            raise AirflowException('sql must be a list of statements')
+        self.sql = sql
         self.parameters = parameters
 
     def execute(self, context):
         hook = AthenaHook(athena_conn_id=self.athena_conn_id)
 
-        for sql in self.sqls:
-            logging.info('Executing: ' + str(sql))
+        for s in self.sql:
+            logging.info('Executing: ' + str(s))
 
             hook.run(
-                sql,
+                s,
                 parameters=self.parameters
             )
