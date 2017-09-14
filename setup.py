@@ -104,7 +104,7 @@ async = [
     'eventlet>= 0.9.7',
     'gevent>=0.13'
 ]
-athena = ['PyAthenaJDBC>=1.2.0']
+athena = ['PyAthena>=1.1.0']
 azure = ['azure-storage>=0.34.0']
 celery = [
     'celery>=3.1.17',

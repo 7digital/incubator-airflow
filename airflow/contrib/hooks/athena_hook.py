@@ -16,7 +16,7 @@ from builtins import str
 import logging
 import os
 
-import pyathenajdbc
+import pyathena
 
 from airflow.hooks.dbapi_hook import DbApiHook
 
@@ -41,12 +41,12 @@ class AthenaHook(DbApiHook):
     def get_conn(self):
         """Returns a connection object"""
         db = self.get_connection(self.athena_conn_id)
-        return pyathenajdbc.connect(
+        return pyathena.connect(
             s3_staging_dir=db.extra_dejson.get('s3_staging_dir', None),
             region_name=db.host,
             access_key=os.getenv('AWS_ACCESS_KEY_ID', db.login),
             secret_key=os.getenv('AWS_SECRET_ACCESS_KEY', db.password),
-            catalog=db.extra_dejson.get('catalog', 'hive'),
+            schema_name=db.schema,
         )
 
     @staticmethod
