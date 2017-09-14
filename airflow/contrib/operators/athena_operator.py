@@ -17,6 +17,7 @@ import logging
 from airflow.contrib.hooks.athena_hook import AthenaHook
 from airflow.models import BaseOperator
 from airflow.utils.decorators import apply_defaults
+from airflow.exceptions import AirflowException
 
 
 class AthenaOperator(BaseOperator):
@@ -38,17 +39,21 @@ class AthenaOperator(BaseOperator):
     ui_color = '#ededed'
 
     @apply_defaults
-    def __init__(self, sql, athena_conn_id='athena_default', parameters=None, *args, **kwargs):
+    def __init__(self, sqls, athena_conn_id='athena_default', parameters=None, *args, **kwargs):
         super(AthenaOperator, self).__init__(*args, **kwargs)
         self.athena_conn_id = athena_conn_id
-        self.sql = sql
+        if type(sqls) is not list:
+            raise AirflowException('sqls must be a list of statements')
+        self.sqls = sqls
         self.parameters = parameters
 
     def execute(self, context):
-        logging.info('Executing: ' + str(self.sql))
         hook = AthenaHook(athena_conn_id=self.athena_conn_id)
 
-        hook.run(
-            self.sql,
-            parameters=self.parameters
-        )
+        for sql in self.sqls:
+            logging.info('Executing: ' + str(sql))
+
+            hook.run(
+                sql,
+                parameters=self.parameters
+            )
