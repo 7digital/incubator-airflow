@@ -44,8 +44,8 @@ class AthenaHook(DbApiHook):
         return pyathena.connect(
             s3_staging_dir=db.extra_dejson.get('s3_staging_dir', None),
             region_name=db.host,
-            access_key=os.getenv('AWS_ACCESS_KEY_ID', db.login),
-            secret_key=os.getenv('AWS_SECRET_ACCESS_KEY', db.password),
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID', db.login),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY', db.password),
             schema_name=db.schema,
         )
 
