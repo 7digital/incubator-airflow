@@ -73,7 +73,7 @@ class AthenaHook(DbApiHook):
         try:
             return super(AthenaHook, self).get_records(
                 self._strip_sql(hql), parameters)
-        except pyathenajdbc.DatabaseError as e:
+        except pyathena.error.DatabaseError as e:
             raise AthenaException(self._get_pretty_exception_message(e))
 
     def get_first(self, hql, parameters=None):
@@ -84,7 +84,7 @@ class AthenaHook(DbApiHook):
         try:
             return super(AthenaHook, self).get_first(
                 self._strip_sql(hql), parameters)
-        except pyathenajdbc.DatabaseError as e:
+        except pyathena.error.DatabaseError as e:
             raise AthenaException(self._get_pretty_exception_message(e))
 
     def get_pandas_df(self, hql, parameters=None):
@@ -96,7 +96,7 @@ class AthenaHook(DbApiHook):
         try:
             cursor.execute(self._strip_sql(hql), parameters)
             data = cursor.fetchall()
-        except pyathenajdbc.DatabaseError as e:
+        except pyathena.error.DatabaseError as e:
             raise AthenaException(self._get_pretty_exception_message(e))
         column_descriptions = cursor.description
         if data is not None:
