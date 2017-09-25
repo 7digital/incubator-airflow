@@ -18,7 +18,7 @@ import re
 
 from airflow.hooks.base_hook import BaseHook
 from airflow.exceptions import AirflowException
-from airflow.utils.log.LoggingMixin import LoggingMixin
+from airflow.utils.log.logging_mixin import LoggingMixin
 
 
 class SparkSubmitHook(BaseHook, LoggingMixin):
@@ -68,6 +68,7 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
                  py_files=None,
                  jars=None,
                  java_class=None,
+                 packages=None,
                  total_executor_cores=None,
                  executor_cores=None,
                  executor_memory=None,
@@ -84,6 +85,7 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
         self._py_files = py_files
         self._jars = jars
         self._java_class = java_class
+        self._packages = packages
         self._total_executor_cores = total_executor_cores
         self._executor_cores = executor_cores
         self._executor_memory = executor_memory
@@ -123,7 +125,7 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
             conn_data['spark_home'] = extra.get('spark-home', None)
             conn_data['spark_binary'] = extra.get('spark-binary', 'spark-submit')
         except AirflowException:
-            self.logger.debug(
+            self.log.debug(
                 "Could not load connection string %s, defaulting to %s",
                 self._conn_id, conn_data['master']
             )
@@ -160,6 +162,8 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
             connection_cmd += ["--py-files", self._py_files]
         if self._jars:
             connection_cmd += ["--jars", self._jars]
+        if self._packages:
+            connection_cmd += ["--packages", self._packages]
         if self._num_executors:
             connection_cmd += ["--num-executors", str(self._num_executors)]
         if self._total_executor_cores:
@@ -192,7 +196,7 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
         if self._application_args:
             connection_cmd += self._application_args
 
-        self.logger.debug("Spark-Submit cmd: %s", connection_cmd)
+        self.log.debug("Spark-Submit cmd: %s", connection_cmd)
 
         return connection_cmd
 
@@ -239,15 +243,15 @@ class SparkSubmitHook(BaseHook, LoggingMixin):
                     self._yarn_application_id = match.groups()[0]
 
             # Pass to logging
-            self.logger.info(line)
+            self.log.info(line)
 
     def on_kill(self):
         if self._sp and self._sp.poll() is None:
-            self.logger.info('Sending kill signal to %s', self._connection['spark_binary'])
+            self.log.info('Sending kill signal to %s', self._connection['spark_binary'])
             self._sp.kill()
 
             if self._yarn_application_id:
-                self.logger.info('Killing application on YARN')
+                self.log.info('Killing application on YARN')
                 kill_cmd = "yarn application -kill {0}".format(self._yarn_application_id).split()
                 yarn_kill = subprocess.Popen(kill_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.logger.info("YARN killed with return code: %s", yarn_kill.wait())
+                self.log.info("YARN killed with return code: %s", yarn_kill.wait())

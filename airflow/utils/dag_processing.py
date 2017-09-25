@@ -27,7 +27,7 @@ from datetime import datetime
 
 from airflow.dag.base_dag import BaseDag, BaseDagBag
 from airflow.exceptions import AirflowException
-from airflow.utils.log.LoggingMixin import LoggingMixin
+from airflow.utils.log.logging_mixin import LoggingMixin
 
 
 class SimpleDag(BaseDag):
@@ -205,7 +205,7 @@ def list_py_file_paths(directory, safe_mode=True):
 
                     file_paths.append(file_path)
                 except Exception:
-                    log = LoggingMixin().logger
+                    log = LoggingMixin().log
                     log.exception("Error while examining %s", f)
     return file_paths
 
@@ -390,7 +390,7 @@ class DagFileProcessorManager(LoggingMixin):
         being processed
         """
         if file_path in self._processors:
-            return (datetime.now() - self._processors[file_path].start_time)\
+            return (datetime.utcnow() - self._processors[file_path].start_time)\
                 .total_seconds()
         return None
 
@@ -443,7 +443,7 @@ class DagFileProcessorManager(LoggingMixin):
             if file_path in new_file_paths:
                 filtered_processors[file_path] = processor
             else:
-                self.logger.warning("Stopping processor for %s", file_path)
+                self.log.warning("Stopping processor for %s", file_path)
                 processor.stop()
         self._processors = filtered_processors
 
@@ -476,7 +476,7 @@ class DagFileProcessorManager(LoggingMixin):
         :return: the path to the corresponding log directory
         :rtype: unicode
         """
-        now = datetime.now()
+        now = datetime.utcnow()
         return os.path.join(self._child_process_log_directory,
                             now.strftime("%Y-%m-%d"))
 
@@ -519,7 +519,7 @@ class DagFileProcessorManager(LoggingMixin):
                     os.symlink(log_directory, latest_log_directory_path)
             elif (os.path.isdir(latest_log_directory_path) or
                     os.path.isfile(latest_log_directory_path)):
-                self.logger.warning(
+                self.log.warning(
                     "%s already exists as a dir/file. Skip creating symlink.",
                     latest_log_directory_path
                 )
@@ -558,8 +558,8 @@ class DagFileProcessorManager(LoggingMixin):
 
         for file_path, processor in self._processors.items():
             if processor.done:
-                self.logger.info("Processor for %s finished", file_path)
-                now = datetime.now()
+                self.log.info("Processor for %s finished", file_path)
+                now = datetime.utcnow()
                 finished_processors[file_path] = processor
                 self._last_runtime[file_path] = (now -
                                                  processor.start_time).total_seconds()
@@ -573,7 +573,7 @@ class DagFileProcessorManager(LoggingMixin):
         simple_dags = []
         for file_path, processor in finished_processors.items():
             if processor.result is None:
-                self.logger.warning(
+                self.log.warning(
                     "Processor for %s exited with return code %s. See %s for details.",
                     processor.file_path, processor.exit_code, processor.log_file
                 )
@@ -587,7 +587,7 @@ class DagFileProcessorManager(LoggingMixin):
             # If the file path is already being processed, or if a file was
             # processed recently, wait until the next batch
             file_paths_in_progress = self._processors.keys()
-            now = datetime.now()
+            now = datetime.utcnow()
             file_paths_recently_processed = []
             for file_path in self._file_paths:
                 last_finish_time = self.get_last_finish_time(file_path)
@@ -606,12 +606,12 @@ class DagFileProcessorManager(LoggingMixin):
                                         set(files_paths_at_run_limit))
 
             for file_path, processor in self._processors.items():
-                self.logger.debug(
+                self.log.debug(
                     "File path %s is still being processed (started: %s)",
                     processor.file_path, processor.start_time.isoformat()
                 )
 
-            self.logger.debug(
+            self.log.debug(
                 "Queuing the following files for processing:\n\t%s",
                 "\n\t".join(files_paths_to_queue)
             )
@@ -626,7 +626,7 @@ class DagFileProcessorManager(LoggingMixin):
             processor = self._processor_factory(file_path, log_file_path)
 
             processor.start()
-            self.logger.info(
+            self.log.info(
                 "Started a process (PID: %s) to generate tasks for %s - logging into %s",
                 processor.pid, file_path, log_file_path
             )
