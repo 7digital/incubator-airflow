@@ -58,7 +58,7 @@ class TriggerDagRunOperator(BaseOperator):
         self.trigger_dag_id = trigger_dag_id
 
     def execute(self, context):
-        dro = DagRunOrder(run_id='trig__' + datetime.now().isoformat())
+        dro = DagRunOrder(run_id='trig__' + datetime.utcnow().isoformat())
         dro = self.python_callable(context, dro)
         if dro:
             session = settings.Session()
@@ -69,9 +69,9 @@ class TriggerDagRunOperator(BaseOperator):
                 state=State.RUNNING,
                 conf=dro.payload,
                 external_trigger=True)
-            self.logger.info("Creating DagRun %s", dr)
+            self.log.info("Creating DagRun %s", dr)
             session.add(dr)
             session.commit()
             session.close()
         else:
-            self.logger.info("Criteria not met, moving on")
+            self.log.info("Criteria not met, moving on")

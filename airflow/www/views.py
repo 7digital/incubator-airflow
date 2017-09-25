@@ -24,6 +24,7 @@ from functools import wraps
 from datetime import datetime, timedelta
 import dateutil.parser
 import copy
+import math
 import json
 import bleach
 from collections import defaultdict
@@ -46,6 +47,8 @@ from flask_login import flash
 from flask._compat import PY2
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+from jinja2 import escape
+
 import markdown
 import nvd3
 
@@ -155,7 +158,7 @@ def duration_f(v, c, m, p):
 def datetime_f(v, c, m, p):
     attr = getattr(m, p)
     dttm = attr.isoformat() if attr else ''
-    if datetime.now().isoformat()[:4] == dttm[:4]:
+    if datetime.utcnow().isoformat()[:4] == dttm[:4]:
         dttm = dttm[5:]
     return Markup("<nobr>{}</nobr>".format(dttm))
 
@@ -222,10 +225,7 @@ attr_renderer = {
 
 
 def data_profiling_required(f):
-    '''
-    Decorator for views requiring data profiling access
-    '''
-
+    """Decorator for views requiring data profiling access"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if (
@@ -309,9 +309,10 @@ class Airflow(BaseView):
         session.commit()
         session.close()
 
-        payload = {}
-        payload['state'] = 'ERROR'
-        payload['error'] = ''
+        payload = {
+            "state": "ERROR",
+            "error": ""
+        }
 
         # Processing templated fields
         try:
@@ -705,6 +706,7 @@ class Airflow(BaseView):
             handler = next((handler for handler in logger.handlers
                             if handler.name == task_log_reader), None)
             try:
+                ti.task = dag.get_task(ti.task_id)
                 logs = handler.read(ti)
             except AttributeError as e:
                 logs = ["Task log handler {} does not support read logs.\n{}\n" \
@@ -907,7 +909,7 @@ class Airflow(BaseView):
             flash("Cannot find dag {}".format(dag_id))
             return redirect(origin)
 
-        execution_date = datetime.now()
+        execution_date = datetime.utcnow()
         run_id = "manual__{0}".format(execution_date.isoformat())
 
         dr = DagRun.find(dag_id=dag_id, run_id=run_id)
@@ -1147,7 +1149,7 @@ class Airflow(BaseView):
         if base_date:
             base_date = dateutil.parser.parse(base_date)
         else:
-            base_date = dag.latest_execution_date or datetime.now()
+            base_date = dag.latest_execution_date or datetime.utcnow()
 
         dates = dag.date_range(base_date, num=-abs(num_runs))
         min_date = dates[0] if dates else datetime(2000, 1, 1)
@@ -1203,7 +1205,7 @@ class Airflow(BaseView):
             def set_duration(tid):
                 if (isinstance(tid, dict) and tid.get("state") == State.RUNNING and
                             tid["start_date"] is not None):
-                    d = datetime.now() - dateutil.parser.parse(tid["start_date"])
+                    d = datetime.utcnow() - dateutil.parser.parse(tid["start_date"])
                     tid["duration"] = d.total_seconds()
                 return tid
 
@@ -1301,7 +1303,7 @@ class Airflow(BaseView):
         if dttm:
             dttm = dateutil.parser.parse(dttm)
         else:
-            dttm = dag.latest_execution_date or datetime.now().date()
+            dttm = dag.latest_execution_date or datetime.utcnow().date()
 
         DR = models.DagRun
         drs = (
@@ -1378,7 +1380,7 @@ class Airflow(BaseView):
         if base_date:
             base_date = dateutil.parser.parse(base_date)
         else:
-            base_date = dag.latest_execution_date or datetime.now()
+            base_date = dag.latest_execution_date or datetime.utcnow()
 
         dates = dag.date_range(base_date, num=-abs(num_runs))
         min_date = dates[0] if dates else datetime(2000, 1, 1)
@@ -1484,7 +1486,7 @@ class Airflow(BaseView):
         if base_date:
             base_date = dateutil.parser.parse(base_date)
         else:
-            base_date = dag.latest_execution_date or datetime.now()
+            base_date = dag.latest_execution_date or datetime.utcnow()
 
         dates = dag.date_range(base_date, num=-abs(num_runs))
         min_date = dates[0] if dates else datetime(2000, 1, 1)
@@ -1548,7 +1550,7 @@ class Airflow(BaseView):
         if base_date:
             base_date = dateutil.parser.parse(base_date)
         else:
-            base_date = dag.latest_execution_date or datetime.now()
+            base_date = dag.latest_execution_date or datetime.utcnow()
 
         dates = dag.date_range(base_date, num=-abs(num_runs))
         min_date = dates[0] if dates else datetime(2000, 1, 1)
@@ -1642,7 +1644,7 @@ class Airflow(BaseView):
             DagModel).filter(DagModel.dag_id == dag_id).first()
 
         if orm_dag:
-            orm_dag.last_expired = datetime.now()
+            orm_dag.last_expired = datetime.utcnow()
             session.merge(orm_dag)
         session.commit()
         session.close()
@@ -1679,7 +1681,7 @@ class Airflow(BaseView):
         if dttm:
             dttm = dateutil.parser.parse(dttm)
         else:
-            dttm = dag.latest_execution_date or datetime.now().date()
+            dttm = dag.latest_execution_date or datetime.utcnow().date()
 
         form = DateTimeForm(data={'execution_date': dttm})
 
@@ -1690,7 +1692,7 @@ class Airflow(BaseView):
 
         tasks = []
         for ti in tis:
-            end_date = ti.end_date if ti.end_date else datetime.now()
+            end_date = ti.end_date if ti.end_date else datetime.utcnow()
             tasks.append({
                 'startDate': wwwutils.epoch(ti.start_date),
                 'endDate': wwwutils.epoch(end_date),
@@ -1761,6 +1763,8 @@ class Airflow(BaseView):
                     'airflow/variables/{}.html'.format(form)
                 )
         except:
+            # prevent XSS
+            form = escape(form)
             return ("Error: form airflow/variables/{}.html "
                     "not found.").format(form), 404
 
@@ -1786,7 +1790,6 @@ class HomeView(AdminIndexView):
     def index(self):
         session = Session()
         DM = models.DagModel
-        qry = None
 
         # restrict the dags shown if filter_by_owner and current user is not superuser
         do_filter = FILTER_BY_OWNER and (not current_user.is_superuser())
@@ -1795,40 +1798,52 @@ class HomeView(AdminIndexView):
         hide_paused_dags_by_default = conf.getboolean('webserver',
                                                       'hide_paused_dags_by_default')
         show_paused_arg = request.args.get('showPaused', 'None')
+
+        def get_int_arg(value, default=0):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+
+        arg_current_page = request.args.get('page', '0')
+        arg_search_query = request.args.get('search', None)
+
+        dags_per_page = PAGE_SIZE
+        current_page = get_int_arg(arg_current_page, default=0)
+
         if show_paused_arg.strip().lower() == 'false':
             hide_paused = True
-
         elif show_paused_arg.strip().lower() == 'true':
             hide_paused = False
-
         else:
             hide_paused = hide_paused_dags_by_default
 
         # read orm_dags from the db
-        qry = session.query(DM)
-        qry_fltr = []
+        sql_query = session.query(DM)
 
         if do_filter and owner_mode == 'ldapgroup':
-            qry_fltr = qry.filter(
-                ~DM.is_subdag, DM.is_active,
+            sql_query = sql_query.filter(
+                ~DM.is_subdag,
+                DM.is_active,
                 DM.owners.in_(current_user.ldap_groups)
-            ).all()
+            )
         elif do_filter and owner_mode == 'user':
-            qry_fltr = qry.filter(
+            sql_query = sql_query.filter(
                 ~DM.is_subdag, DM.is_active,
                 DM.owners == current_user.user.username
-            ).all()
+            )
         else:
-            qry_fltr = qry.filter(
+            sql_query = sql_query.filter(
                 ~DM.is_subdag, DM.is_active
-            ).all()
+            )
 
         # optionally filter out "paused" dags
         if hide_paused:
-            orm_dags = {dag.dag_id: dag for dag in qry_fltr if not dag.is_paused}
+            sql_query = sql_query.filter(~DM.is_paused)
 
-        else:
-            orm_dags = {dag.dag_id: dag for dag in qry_fltr}
+        orm_dags = {dag.dag_id: dag for dag
+                    in sql_query
+                    .all()}
 
         import_errors = session.query(models.ImportError).all()
         for ie in import_errors:
@@ -1870,13 +1885,58 @@ class HomeView(AdminIndexView):
                 for dag in unfiltered_webserver_dags
             }
 
-        all_dag_ids = sorted(set(orm_dags.keys()) | set(webserver_dags.keys()))
+        if arg_search_query:
+            lower_search_query = arg_search_query.lower()
+            # filter by dag_id
+            webserver_dags_filtered = {
+                dag_id: dag
+                for dag_id, dag in webserver_dags.items()
+                if (lower_search_query in dag_id.lower() or
+                    lower_search_query in dag.owner.lower())
+            }
+
+            all_dag_ids = (set([dag.dag_id for dag in orm_dags.values()
+                                if lower_search_query in dag.dag_id.lower() or
+                                lower_search_query in dag.owners.lower()]) |
+                           set(webserver_dags_filtered.keys()))
+
+            sorted_dag_ids = sorted(all_dag_ids)
+        else:
+            webserver_dags_filtered = webserver_dags
+            sorted_dag_ids = sorted(set(orm_dags.keys()) | set(webserver_dags.keys()))
+
+        start = current_page * dags_per_page
+        end = start + dags_per_page
+
+        num_of_all_dags = len(sorted_dag_ids)
+        page_dag_ids = sorted_dag_ids[start:end]
+        num_of_pages = int(math.ceil(num_of_all_dags / float(dags_per_page)))
+
+        auto_complete_data = set()
+        for dag in webserver_dags_filtered.values():
+            auto_complete_data.add(dag.dag_id)
+            auto_complete_data.add(dag.owner)
+        for dag in orm_dags.values():
+            auto_complete_data.add(dag.dag_id)
+            auto_complete_data.add(dag.owners)
+
         return self.render(
             'airflow/dags.html',
-            webserver_dags=webserver_dags,
+            webserver_dags=webserver_dags_filtered,
             orm_dags=orm_dags,
             hide_paused=hide_paused,
-            all_dag_ids=all_dag_ids)
+            current_page=current_page,
+            search_query=arg_search_query if arg_search_query else '',
+            page_size=dags_per_page,
+            num_of_pages=num_of_pages,
+            num_dag_from=start + 1,
+            num_dag_to=min(end, num_of_all_dags),
+            num_of_all_dags=num_of_all_dags,
+            paging=wwwutils.generate_pages(current_page, num_of_pages,
+                                           search=arg_search_query,
+                                           showPaused=not hide_paused),
+            dag_ids_in_page=page_dag_ids,
+            auto_complete_data=auto_complete_data)
 
 
 class QueryView(wwwutils.DataProfilingMixin, BaseView):
@@ -2106,7 +2166,7 @@ class ChartModelView(wwwutils.DataProfilingMixin, AirflowModelView):
             model.iteration_no += 1
         if not model.user_id and current_user and hasattr(current_user, 'id'):
             model.user_id = current_user.id
-        model.last_modified = datetime.now()
+        model.last_modified = datetime.utcnow()
 
 
 chart_mapping = (
@@ -2367,9 +2427,9 @@ class DagRunModelView(ModelViewOnly):
                 count += 1
                 dr.state = target_state
                 if target_state == State.RUNNING:
-                    dr.start_date = datetime.now()
+                    dr.start_date = datetime.utcnow()
                 else:
-                    dr.end_date = datetime.now()
+                    dr.end_date = datetime.utcnow()
             session.commit()
             models.DagStat.update(dirty_ids, session=session)
             flash(
@@ -2528,7 +2588,7 @@ class ConnectionModelView(wwwutils.SuperUserMixin, AirflowModelView):
     verbose_name_plural = "Connections"
     column_default_sort = ('conn_id', False)
     column_list = ('conn_id', 'conn_type', 'host', 'port', 'is_encrypted', 'is_extra_encrypted',)
-    form_overrides = dict(_password=PasswordField)
+    form_overrides = dict(_password=PasswordField, _extra=TextAreaField)
     form_widget_args = {
         'is_extra_encrypted': {'disabled': True},
         'is_encrypted': {'disabled': True},

@@ -53,7 +53,7 @@ from airflow.models import (DagModel, DagBag, TaskInstance,
 
 from airflow.ti_deps.dep_context import (DepContext, SCHEDULER_DEPS)
 from airflow.utils import db as db_utils
-from airflow.utils.log.LoggingMixin import LoggingMixin
+from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.www.app import cached_app
 
 from sqlalchemy import func
@@ -64,7 +64,7 @@ api_module = import_module(conf.get('cli', 'api_client'))
 api_client = api_module.Client(api_base_url=conf.get('cli', 'endpoint_url'),
                                auth=api.api_auth.client_auth)
 
-log = LoggingMixin().logger
+log = LoggingMixin().log
 
 
 def sigint_handler(sig, frame):
@@ -189,7 +189,7 @@ def trigger_dag(args):
     :param args:
     :return:
     """
-    log = LoggingMixin().logger
+    log = LoggingMixin().log
     try:
         message = api_client.trigger_dag(dag_id=args.dag_id,
                                          run_id=args.run_id,
@@ -202,7 +202,7 @@ def trigger_dag(args):
 
 
 def pool(args):
-    log = LoggingMixin().logger
+    log = LoggingMixin().log
 
     def _tabulate(pools):
         return "\n%s" % tabulate(pools, ['Pool', 'Slots', 'Description'],
@@ -330,7 +330,7 @@ def run(args, dag=None):
     if dag:
         args.dag_id = dag.dag_id
 
-    log = LoggingMixin().logger
+    log = LoggingMixin().log
 
     # Load custom airflow config
     if args.cfg_path:
@@ -862,6 +862,7 @@ def worker(args):
         'O': 'fair',
         'queues': args.queues,
         'concurrency': args.concurrency,
+        'hostname': args.celery_hostname,
     }
 
     if args.daemon:
@@ -1379,6 +1380,10 @@ class CLIFactory(object):
             type=int,
             help="The number of worker processes",
             default=conf.get('celery', 'celeryd_concurrency')),
+        'celery_hostname': Arg(
+            ("-cn", "--celery_hostname"),
+            help=("Set the hostname of celery worker "
+                  "if you have multiple workers on a single machine.")),
         # flower
         'broker_api': Arg(("-a", "--broker_api"), help="Broker api"),
         'flower_hostname': Arg(
@@ -1538,7 +1543,7 @@ class CLIFactory(object):
         }, {
             'func': worker,
             'help': "Start a Celery worker node",
-            'args': ('do_pickle', 'queues', 'concurrency',
+            'args': ('do_pickle', 'queues', 'concurrency', 'celery_hostname',
                      'pid', 'daemon', 'stdout', 'stderr', 'log_file'),
         }, {
             'func': flower,
