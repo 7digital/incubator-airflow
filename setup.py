@@ -106,8 +106,9 @@ async = [
 ]
 athena = ['PyAthena>=1.1.0']
 azure = ['azure-storage>=0.34.0']
+sendgrid = ['sendgrid>=5.2.0']
 celery = [
-    'celery>=3.1.17',
+    'celery>=4.0.0',
     'flower>=0.7.3'
 ]
 cgroups = [
@@ -275,6 +276,7 @@ def do_setup():
             's3': s3,
             'salesforce': salesforce,
             'samba': samba,
+            'sendgrid' : sendgrid,
             'slack': slack,
             'ssh': ssh,
             'statsd': statsd,

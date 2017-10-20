@@ -40,6 +40,7 @@ from time import sleep
 from airflow import configuration as conf
 from airflow import executors, models, settings
 from airflow.exceptions import AirflowException
+from airflow.logging_config import configure_logging
 from airflow.models import DAG, DagRun
 from airflow.settings import Stats
 from airflow.task_runner import get_task_runner
@@ -220,7 +221,7 @@ class BaseJob(Base, LoggingMixin):
         :param filter_by_dag_run: the dag_run we want to process, None if all
         :type filter_by_dag_run: models.DagRun
         :return: the TIs reset (in expired SQLAlchemy state)
-        :rtype: List(TaskInsance)
+        :rtype: List(TaskInstance)
         """
         queued_tis = self.executor.queued_tasks
         # also consider running as the state might not have changed in the db yet
@@ -372,9 +373,7 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
             sys.stderr = f
 
             try:
-                # Re-configure logging to use the new output streams
-                log_format = settings.LOG_FORMAT_WITH_THREAD_NAME
-                settings.configure_logging(log_format=log_format)
+                configure_logging()
                 # Re-configure the ORM engine as there are issues with multiple processes
                 settings.configure_orm()
 
@@ -656,8 +655,7 @@ class SchedulerJob(BaseJob):
         slas = (
             session
             .query(SlaMiss)
-            .filter(or_(SlaMiss.email_sent == False,
-                        SlaMiss.notification_sent == False))
+            .filter(SlaMiss.notification_sent == False)
             .filter(SlaMiss.dag_id == dag.dag_id)
             .all()
         )
@@ -697,7 +695,7 @@ class SchedulerJob(BaseJob):
                 dag.sla_miss_callback(dag, task_list, blocking_task_list, slas, blocking_tis)
                 notification_sent = True
             email_content = """\
-            Here's a list of tasks thas missed their SLAs:
+            Here's a list of tasks that missed their SLAs:
             <pre><code>{task_list}\n<code></pre>
             Blocking tasks:
             <pre><code>{blocking_task_list}\n{bug}<code></pre>
@@ -1026,6 +1024,30 @@ class SchedulerJob(BaseJob):
             )
 
     @provide_session
+    def __get_task_concurrency_map(self, states, session=None):
+        """
+        Returns a map from tasks to number in the states list given.
+
+        :param states: List of states to query for
+        :type states: List[State]
+        :return: A map from (dag_id, task_id) to count of tasks in states
+        :rtype: Dict[[String, String], Int]
+
+        """
+        TI = models.TaskInstance
+        ti_concurrency_query = (
+            session
+            .query(TI.task_id, TI.dag_id, func.count('*'))
+            .filter(TI.state.in_(states))
+            .group_by(TI.task_id, TI.dag_id)
+        ).all()
+        task_map = defaultdict(int)
+        for result in ti_concurrency_query:
+            task_id, dag_id, count = result
+            task_map[(dag_id, task_id)] = count
+        return task_map
+
+    @provide_session
     def _find_executable_task_instances(self, simple_dag_bag, states, session=None):
         """
         Finds TIs that are ready for execution with respect to pool limits,
@@ -1040,11 +1062,14 @@ class SchedulerJob(BaseJob):
         :type states: Tuple[State]
         :return: List[TaskInstance]
         """
+        # TODO(saguziel): Change this to include QUEUED, for concurrency
+        # purposes we may want to count queued tasks
+        states_to_count_as_running = [State.RUNNING]
         executable_tis = []
 
         # Get all the queued task instances from associated with scheduled
         # DagRuns which are not backfilled, in the given states,
-        # and the dag is not pasued
+        # and the dag is not paused
         TI = models.TaskInstance
         DR = models.DagRun
         DM = models.DagModel
@@ -1084,6 +1109,8 @@ class SchedulerJob(BaseJob):
         for task_instance in task_instances_to_examine:
             pool_to_task_instances[task_instance.pool].append(task_instance)
 
+        task_concurrency_map = self.__get_task_concurrency_map(states=states_to_count_as_running, session=session)
+
         # Go through each pool, and queue up a task for execution if there are
         # any open slots in the pool.
         for pool, task_instances in pool_to_task_instances.items():
@@ -1121,6 +1148,7 @@ class SchedulerJob(BaseJob):
                 # Check to make sure that the task concurrency of the DAG hasn't been
                 # reached.
                 dag_id = task_instance.dag_id
+                simple_dag = simple_dag_bag.get_dag(dag_id)
 
                 if dag_id not in dag_id_to_possibly_running_task_count:
                     # TODO(saguziel): also check against QUEUED state, see AIRFLOW-1104
@@ -1128,7 +1156,7 @@ class SchedulerJob(BaseJob):
                         DAG.get_num_task_instances(
                             dag_id,
                             simple_dag_bag.get_dag(dag_id).task_ids,
-                            states=[State.RUNNING],
+                            states=states_to_count_as_running,
                             session=session)
 
                 current_task_concurrency = dag_id_to_possibly_running_task_count[dag_id]
@@ -1144,6 +1172,16 @@ class SchedulerJob(BaseJob):
                         task_instance, dag_id, task_concurrency_limit
                     )
                     continue
+
+                task_concurrency = simple_dag.get_task_special_arg(task_instance.task_id, 'task_concurrency')
+                if task_concurrency is not None:
+                    num_running = task_concurrency_map[((task_instance.dag_id, task_instance.task_id))]
+                    if num_running >= task_concurrency:
+                        self.logger.info("Not executing %s since the task concurrency for this task"
+                                         " has been reached.", task_instance)
+                        continue
+                    else:
+                        task_concurrency_map[(task_instance.dag_id, task_instance.task_id)] += 1
 
                 if self.executor.has_task(task_instance):
                     self.log.debug(
@@ -1612,7 +1650,7 @@ class SchedulerJob(BaseJob):
                 self._execute_task_instances(simple_dag_bag,
                                              (State.SCHEDULED,))
 
-            # Call hearbeats
+            # Call heartbeats
             self.log.info("Heartbeating the executor")
             self.executor.heartbeat()
 
@@ -1725,16 +1763,9 @@ class SchedulerJob(BaseJob):
             if pickle_dags:
                 pickle_id = dag.pickle(session).id
 
-            task_ids = [task.task_id for task in dag.tasks]
-
             # Only return DAGs that are not paused
             if dag_id not in paused_dag_ids:
-                simple_dags.append(SimpleDag(dag.dag_id,
-                                             task_ids,
-                                             dag.full_filepath,
-                                             dag.concurrency,
-                                             dag.is_paused,
-                                             pickle_id))
+                simple_dags.append(SimpleDag(dag, pickle_id=pickle_id))
 
         if len(self.dag_ids) > 0:
             dags = [dag for dag in dagbag.dags.values()

@@ -37,10 +37,11 @@ from airflow.models import DAG, DagModel, DagBag, DagRun, Pool, TaskInstance as 
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.bash_operator import BashOperator
 from airflow.task_runner.base_task_runner import BaseTaskRunner
+from airflow.utils.dates import days_ago
 from airflow.utils.db import provide_session
 from airflow.utils.state import State
 from airflow.utils.timeout import timeout
-from airflow.utils.dag_processing import SimpleDagBag, list_py_file_paths
+from airflow.utils.dag_processing import SimpleDag, SimpleDagBag, list_py_file_paths
 
 from mock import Mock, patch
 from sqlalchemy.orm.session import make_transient
@@ -859,7 +860,7 @@ class LocalTaskJobTest(unittest.TestCase):
         session.merge(ti)
         session.commit()
 
-        process.join(timeout=5)
+        process.join(timeout=10)
         self.assertFalse(process.is_alive())
         ti.refresh_from_db()
         self.assertEqual(State.SUCCESS, ti.state)
@@ -931,13 +932,16 @@ class SchedulerJobTest(unittest.TestCase):
         scheduler.heartrate = 0
         scheduler.run()
 
+    def _make_simple_dag_bag(self, dags):
+        return SimpleDagBag([SimpleDag(dag) for dag in dags])
+
     def test_execute_task_instances_is_paused_wont_execute(self):
         dag_id = 'SchedulerJobTest.test_execute_task_instances_is_paused_wont_execute'
         task_id_1 = 'dummy_task'
 
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -967,7 +971,7 @@ class SchedulerJobTest(unittest.TestCase):
 
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -992,7 +996,7 @@ class SchedulerJobTest(unittest.TestCase):
 
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1017,7 +1021,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1057,7 +1061,7 @@ class SchedulerJobTest(unittest.TestCase):
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
         task1 = DummyOperator(dag=dag, task_id=task_id_1, pool='a')
         task2 = DummyOperator(dag=dag, task_id=task_id_2, pool='b')
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1098,7 +1102,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1116,7 +1120,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=2)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1157,6 +1161,98 @@ class SchedulerJobTest(unittest.TestCase):
 
         self.assertEqual(0, len(res))
 
+    def test_find_executable_task_instances_task_concurrency(self):
+        dag_id = 'SchedulerJobTest.test_find_executable_task_instances_task_concurrency'
+        task_id_1 = 'dummy'
+        task_id_2 = 'dummy2'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
+        task1 = DummyOperator(dag=dag, task_id=task_id_1, task_concurrency=2)
+        task2 = DummyOperator(dag=dag, task_id=task_id_2)
+        dagbag = self._make_simple_dag_bag([dag])
+
+        scheduler = SchedulerJob(**self.default_scheduler_args)
+        session = settings.Session()
+
+        dr1 = scheduler.create_dag_run(dag)
+        dr2 = scheduler.create_dag_run(dag)
+        dr3 = scheduler.create_dag_run(dag)
+
+        ti1_1 = TI(task1, dr1.execution_date)
+        ti2 = TI(task2, dr1.execution_date)
+
+        ti1_1.state = State.SCHEDULED
+        ti2.state = State.SCHEDULED
+        session.merge(ti1_1)
+        session.merge(ti2)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(2, len(res))
+
+        ti1_1.state = State.RUNNING
+        ti2.state = State.RUNNING
+        ti1_2 = TI(task1, dr2.execution_date)
+        ti1_2.state = State.SCHEDULED
+        session.merge(ti1_1)
+        session.merge(ti2)
+        session.merge(ti1_2)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(1, len(res))
+
+        ti1_2.state = State.RUNNING
+        ti1_3 = TI(task1, dr3.execution_date)
+        ti1_3.state = State.SCHEDULED
+        session.merge(ti1_2)
+        session.merge(ti1_3)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(0, len(res))
+
+        ti1_1.state = State.SCHEDULED
+        ti1_2.state = State.SCHEDULED
+        ti1_3.state = State.SCHEDULED
+        session.merge(ti1_1)
+        session.merge(ti1_2)
+        session.merge(ti1_3)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(2, len(res))
+
+        ti1_1.state = State.RUNNING
+        ti1_2.state = State.SCHEDULED
+        ti1_3.state = State.SCHEDULED
+        session.merge(ti1_1)
+        session.merge(ti1_2)
+        session.merge(ti1_3)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(1, len(res))
+
     def test_change_state_for_executable_task_instances_no_tis(self):
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1168,7 +1264,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=2)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1200,7 +1296,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=2)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1236,7 +1332,7 @@ class SchedulerJobTest(unittest.TestCase):
         task_id_1 = 'dummy'
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1281,7 +1377,7 @@ class SchedulerJobTest(unittest.TestCase):
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=3)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
         task2 = DummyOperator(dag=dag, task_id=task_id_2)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         session = settings.Session()
@@ -1342,7 +1438,7 @@ class SchedulerJobTest(unittest.TestCase):
         dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
         task1 = DummyOperator(dag=dag, task_id=task_id_1)
         task2 = DummyOperator(dag=dag, task_id=task_id_2)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         scheduler = SchedulerJob(**self.default_scheduler_args)
         scheduler.max_tis_per_query = 3
@@ -1409,16 +1505,18 @@ class SchedulerJobTest(unittest.TestCase):
         ti2.state = State.SCHEDULED
         session.commit()
 
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
         scheduler = SchedulerJob(num_runs=0, run_duration=0)
         scheduler._change_state_for_tis_without_dagrun(simple_dag_bag=dagbag,
                                                        old_states=[State.SCHEDULED, State.QUEUED],
                                                        new_state=State.NONE,
                                                        session=session)
 
+        ti = dr.get_task_instance(task_id='dummy', session=session)
         ti.refresh_from_db(session=session)
         self.assertEqual(ti.state, State.SCHEDULED)
 
+        ti2 = dr2.get_task_instance(task_id='dummy', session=session)
         ti2.refresh_from_db(session=session)
         self.assertEqual(ti2.state, State.SCHEDULED)
 
@@ -2041,7 +2139,7 @@ class SchedulerJobTest(unittest.TestCase):
         queue = []
         scheduler._process_task_instances(dag, queue=queue)
         self.assertEquals(len(queue), 2)
-        dagbag = SimpleDagBag([dag])
+        dagbag = self._make_simple_dag_bag([dag])
 
         # Recreated part of the scheduler here, to kick off tasks -> executor
         for ti_key in queue:
@@ -2161,6 +2259,46 @@ class SchedulerJobTest(unittest.TestCase):
 
         do_schedule()
         self.assertEquals(2, len(executor.queued_tasks))
+
+    def test_scheduler_sla_miss_callback(self):
+        """
+        Test that the scheduler does not call the sla_miss_callback when a notification has already been sent
+        """
+        session = settings.Session()
+
+        # Mock the callback function so we can verify that it was not called
+        sla_callback = mock.MagicMock()
+
+        # Create dag with a start of 2 days ago, but an sla of 1 day ago so we'll already have an sla_miss on the books
+        test_start_date = days_ago(2)
+        dag = DAG(dag_id='test_sla_miss',
+                  sla_miss_callback=sla_callback,
+                  default_args={'start_date': test_start_date,
+                                'sla': datetime.timedelta(days=1)})
+
+        task = DummyOperator(task_id='dummy',
+                             dag=dag,
+                             owner='airflow')
+
+        # Create a TaskInstance for two days ago
+        session.merge(models.TaskInstance(task=task,
+                                          execution_date=test_start_date,
+                                          state='success'))
+
+        # Create an SlaMiss where notification was sent, but email was not
+        session.merge(models.SlaMiss(task_id='dummy',
+                                     dag_id='test_sla_miss',
+                                     execution_date=test_start_date,
+                                     email_sent=False,
+                                     notification_sent=True))
+
+        # Now call manage_slas and see if the sla_miss callback gets called
+        scheduler = SchedulerJob(dag_id='test_sla_miss',
+                                 num_runs=1,
+                                 **self.default_scheduler_args)
+        scheduler.manage_slas(dag=dag, session=session)
+
+        sla_callback.assert_not_called()
 
     def test_retry_still_in_executor(self):
         """

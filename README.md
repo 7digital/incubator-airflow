@@ -88,6 +88,7 @@ Currently **officially** using Airflow:
 1. [ARGO Labs](http://www.argolabs.org) [[California Data Collaborative](https://github.com/California-Data-Collaborative)]
 1. [Astronomer](http://www.astronomer.io) [[@schnie](https://github.com/schnie)]
 1. [Auth0](https://auth0.com) [[@sicarul](https://github.com/sicarul)]
+1. [Azri Solutions](http://www.azrisolutions.com/) [[@userimack](https://github.com/userimack)]
 1. [BandwidthX](http://www.bandwidthx.com) [[@dineshdsharma](https://github.com/dineshdsharma)]
 1. [Bellhops](https://github.com/bellhops)
 1. [BlaBlaCar](https://www.blablacar.com) [[@puckel](https://github.com/puckel) & [@wmorin](https://github.com/wmorin)]
@@ -115,6 +116,7 @@ Currently **officially** using Airflow:
 1. [eRevalue](https://www.datamaran.com) [[@hamedhsn](https://github.com/hamedhsn)]
 1. [evo.company](https://evo.company/) [[@orhideous](https://github.com/orhideous)]
 1. [FreshBooks](https://github.com/freshbooks) [[@DinoCow](https://github.com/DinoCow)]
+1. [Fundera](https://fundera.com) [[@andyxhadji](https://github.com/andyxhadji)]
 1. [GameWisp](https://gamewisp.com) [[@tjbiii](https://github.com/TJBIII) & [@theryanwalls](https://github.com/theryanwalls)]
 1. [Gentner Lab](http://github.com/gentnerlab) [[@neuromusic](https://github.com/neuromusic)]
 1. [Glassdoor](https://github.com/Glassdoor) [[@syvineckruyk](https://github.com/syvineckruyk)]
@@ -124,6 +126,7 @@ Currently **officially** using Airflow:
 1. [Gusto](https://gusto.com) [[@frankhsu](https://github.com/frankhsu)]
 1. [Handshake](https://joinhandshake.com/) [[@mhickman](https://github.com/mhickman)]
 1. [Handy](http://www.handy.com/careers/73115?gh_jid=73115&gh_src=o5qcxn) [[@marcintustin](https://github.com/marcintustin) / [@mtustin-handy](https://github.com/mtustin-handy)]
+1. [Healthjump](http://www.healthjump.com/) [[@miscbits](https://github.com/miscbits)]
 1. [HBO](http://www.hbo.com/)[[@yiwang](https://github.com/yiwang)]
 1. [HelloFresh](https://www.hellofresh.com) [[@tammymendt](https://github.com/tammymendt) & [@davidsbatista](https://github.com/davidsbatista) & [@iuriinedostup](https://github.com/iuriinedostup)]
 1. [Holimetrix](http://holimetrix.com/) [[@thibault-ketterer](https://github.com/thibault-ketterer)]
