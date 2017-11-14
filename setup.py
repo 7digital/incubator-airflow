@@ -145,7 +145,7 @@ hive = [
     'impyla>=0.13.3',
     'unicodecsv>=0.14.1'
 ]
-jdbc = ['jaydebeapi>=0.2.0']
+jdbc = ['jaydebeapi>=1.1.1']
 mssql = ['pymssql>=2.1.1', 'unicodecsv>=0.14.1']
 mysql = ['mysqlclient>=1.3.6']
 rabbitmq = ['librabbitmq>=1.6.1']
@@ -183,11 +183,12 @@ devel = [
     'jira',
     'lxml>=3.3.4',
     'mock',
-    'moto',
+    'moto==1.1.19',
     'nose',
     'nose-ignore-docstring==0.2',
     'nose-timer',
     'parameterized',
+    'qds-sdk>=1.9.6',
     'rednose',
     'paramiko',
     'requests_mock'
@@ -224,7 +225,7 @@ def do_setup():
             'funcsigs==1.0.0',
             'future>=0.16.0, <0.17',
             'gitpython>=2.0.2',
-            'gunicorn>=19.3.0, <19.4.0',  # 19.4.? seemed to have issues
+            'gunicorn>=19.4.0, <20.0',
             'jinja2>=2.7.3, <2.9.0',
             'lxml>=3.6.0, <4.0',
             'markdown>=2.5.2, <3.0',
@@ -240,6 +241,9 @@ def do_setup():
             'tabulate>=0.7.5, <0.8.0',
             'thrift>=0.9.2',
             'zope.deprecation>=4.0, <5.0',
+        ],
+        setup_requires=[
+            'docutils>=0.14, <1.0',
         ],
         extras_require={
             'all': devel_all,

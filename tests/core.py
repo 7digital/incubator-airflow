@@ -29,6 +29,7 @@ from datetime import datetime, time, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 import signal
+from six.moves.urllib.parse import urlencode
 from time import sleep
 import warnings
 
@@ -665,22 +666,6 @@ class CoreTest(unittest.TestCase):
             task=self.runme_0, execution_date=DEFAULT_DATE)
         job = jobs.LocalTaskJob(task_instance=ti, ignore_ti_state=True)
         job.run()
-
-    @mock.patch('airflow.utils.dag_processing.datetime', FakeDatetime)
-    def test_scheduler_job(self):
-        FakeDatetime.utcnow = classmethod(lambda cls: datetime(2016, 1, 1))
-        job = jobs.SchedulerJob(dag_id='example_bash_operator',
-                                **self.default_scheduler_args)
-        job.run()
-        log_base_directory = configuration.conf.get("scheduler",
-            "child_process_log_directory")
-        latest_log_directory_path = os.path.join(log_base_directory, "latest")
-        # verify that the symlink to the latest logs exists
-        self.assertTrue(os.path.islink(latest_log_directory_path))
-
-        # verify that the symlink points to the correct log directory
-        log_directory = os.path.join(log_base_directory, "2016-01-01")
-        self.assertEqual(os.readlink(latest_log_directory_path), log_directory)
 
     def test_raw_job(self):
         TI = models.TaskInstance
@@ -1671,7 +1656,7 @@ class WebUiTests(unittest.TestCase):
         self.runme_0 = self.dag_bash.get_task('runme_0')
         self.example_xcom = self.dagbag.dags['example_xcom']
 
-        self.dag_bash2.create_dagrun(
+        self.dagrun_bash2 = self.dag_bash2.create_dagrun(
             run_id="test_{}".format(models.DagRun.id_for_date(datetime.utcnow())),
             execution_date=DEFAULT_DATE,
             start_date=datetime.utcnow(),
@@ -1694,8 +1679,18 @@ class WebUiTests(unittest.TestCase):
 
     def test_index(self):
         response = self.app.get('/', follow_redirects=True)
-        self.assertIn("DAGs", response.data.decode('utf-8'))
-        self.assertIn("example_bash_operator", response.data.decode('utf-8'))
+        resp_html = response.data.decode('utf-8')
+        self.assertIn("DAGs", resp_html)
+        self.assertIn("example_bash_operator", resp_html)
+
+        # The HTML should contain data for the last-run. A link to the specific run, and the text of
+        # the date.
+        url = "/admin/airflow/graph?" + urlencode({
+            "dag_id": self.dag_bash2.dag_id,
+            "execution_date": self.dagrun_bash2.execution_date,
+            }).replace("&", "&amp;")
+        self.assertIn(url, resp_html)
+        self.assertIn(self.dagrun_bash2.execution_date.strftime("%Y-%m-%d %H:%M"), resp_html)
 
     def test_query(self):
         response = self.app.get('/admin/queryview/')
@@ -2389,26 +2384,6 @@ class HttpHookTest(unittest.TestCase):
         hook = HttpHook()
         hook.get_conn({})
         self.assertEqual(hook.base_url, 'https://localhost')
-
-
-try:
-    from airflow.hooks.S3_hook import S3Hook
-except ImportError:
-    S3Hook = None
-
-
-@unittest.skipIf(S3Hook is None,
-                 "Skipping test because S3Hook is not installed")
-class S3HookTest(unittest.TestCase):
-    def setUp(self):
-        configuration.load_test_config()
-        self.s3_test_url = "s3://test/this/is/not/a-real-key.txt"
-
-    def test_parse_s3_url(self):
-        parsed = S3Hook.parse_s3_url(self.s3_test_url)
-        self.assertEqual(parsed,
-                         ("test", "this/is/not/a-real-key.txt"),
-                         "Incorrect parsing of the s3 url")
 
 
 send_email_test = mock.Mock()

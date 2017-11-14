@@ -34,6 +34,7 @@ import itertools
 import zipfile
 import jinja2
 import json
+import logging
 import os
 import pickle
 import re
@@ -92,6 +93,7 @@ def get_fernet():
 
     This function could fail either because Cryptography is not installed
     or because the Fernet key is invalid.
+
     :return: Fernet object
     :raises: AirflowException if there's a problem trying to load Fernet
     """
@@ -469,22 +471,19 @@ class DagBag(BaseDagBag, LoggingMixin):
             table=pprinttable(stats),
         )
 
-    def deactivate_inactive_dags(self):
+    @provide_session
+    def deactivate_inactive_dags(self, session=None):
         active_dag_ids = [dag.dag_id for dag in list(self.dags.values())]
-        session = settings.Session()
         for dag in session.query(
                 DagModel).filter(~DagModel.dag_id.in_(active_dag_ids)).all():
             dag.is_active = False
             session.merge(dag)
         session.commit()
-        session.close()
 
-    def paused_dags(self):
-        session = settings.Session()
+    @provide_session
+    def paused_dags(self, session=None):
         dag_ids = [dp.dag_id for dp in session.query(DagModel).filter(
             DagModel.is_paused.__eq__(True))]
-        session.commit()
-        session.close()
         return dag_ids
 
 
@@ -528,6 +527,7 @@ class Connection(Base, LoggingMixin):
     _extra = Column('extra', String(5000))
 
     _types = [
+        ('docker', 'Docker Registry',),
         ('fs', 'File (path)'),
         ('ftp', 'FTP',),
         ('google_cloud_platform', 'Google Cloud Platform'),
@@ -702,6 +702,9 @@ class Connection(Base, LoggingMixin):
             elif self.conn_type == 'wasb':
                 from airflow.contrib.hooks.wasb_hook import WasbHook
                 return WasbHook(wasb_conn_id=self.conn_id)
+            elif self.conn_type == 'docker':
+                from airflow.hooks.docker_hook import DockerHook
+                return DockerHook(docker_conn_id=self.conn_id)
         except:
             pass
 
@@ -806,6 +809,7 @@ class TaskInstance(Base, LoggingMixin):
             self.state = state
         self.hostname = ''
         self.init_on_load()
+        self._log = logging.getLogger("airflow.task")
 
     @reconstructor
     def init_on_load(self):
@@ -1066,7 +1070,8 @@ class TaskInstance(Base, LoggingMixin):
         """
         return self.dag_id, self.task_id, self.execution_date
 
-    def set_state(self, state, session):
+    @provide_session
+    def set_state(self, state, session=None):
         self.state = state
         self.start_date = datetime.utcnow()
         self.end_date = datetime.utcnow()
@@ -1568,10 +1573,10 @@ class TaskInstance(Base, LoggingMixin):
         self.render_templates()
         task_copy.dry_run()
 
-    def handle_failure(self, error, test_mode=False, context=None):
+    @provide_session
+    def handle_failure(self, error, test_mode=False, context=None, session=None):
         self.log.exception(error)
         task = self.task
-        session = settings.Session()
         self.end_date = datetime.utcnow()
         self.set_duration()
         Stats.incr('operator_failures_{}'.format(task.__class__.__name__), 1, 1)
@@ -1918,19 +1923,21 @@ class Log(Base):
 
 
 class SkipMixin(LoggingMixin):
-    def skip(self, dag_run, execution_date, tasks):
+    @provide_session
+    def skip(self, dag_run, execution_date, tasks, session=None):
         """
         Sets tasks instances to skipped from the same dag run.
+
         :param dag_run: the DagRun for which to set the tasks to skipped
         :param execution_date: execution_date
         :param tasks: tasks to skip (not task_ids)
+        :param session: db session to use
         """
         if not tasks:
             return
 
         task_ids = [d.task_id for d in tasks]
         now = datetime.utcnow()
-        session = settings.Session()
 
         if dag_run:
             session.query(TaskInstance).filter(
@@ -1955,7 +1962,6 @@ class SkipMixin(LoggingMixin):
                 session.merge(ti)
 
             session.commit()
-        session.close()
 
 
 @functools.total_ordering
@@ -2161,7 +2167,7 @@ class BaseOperator(LoggingMixin):
 
         if schedule_interval:
             self.log.warning(
-                "schedule_interval is used for {}, though it has "
+                "schedule_interval is used for %s, though it has "
                 "been deprecated as a task parameter, you need to "
                 "specify it as a DAG parameter instead",
                 self
@@ -2500,13 +2506,18 @@ class BaseOperator(LoggingMixin):
     def downstream_task_ids(self):
         return self._downstream_task_ids
 
-    def clear(self, start_date=None, end_date=None, upstream=False, downstream=False):
+    @provide_session
+    def clear(
+              self,
+              start_date=None,
+              end_date=None,
+              upstream=False,
+              downstream=False,
+              session=None):
         """
         Clears the state of task instances associated with the task, following
         the parameters specified.
         """
-        session = settings.Session()
-
         TI = TaskInstance
         qry = session.query(TI).filter(TI.dag_id == self.dag_id)
 
@@ -2532,7 +2543,7 @@ class BaseOperator(LoggingMixin):
         clear_task_instances(qry.all(), session, dag=self.dag)
 
         session.commit()
-        session.close()
+
         return count
 
     def get_task_instances(self, session, start_date=None, end_date=None):
@@ -2755,13 +2766,9 @@ class DagModel(Base):
         return "<DAG: {self.dag_id}>".format(self=self)
 
     @classmethod
-    def get_current(cls, dag_id):
-        session = settings.Session()
-        obj = session.query(cls).filter(cls.dag_id == dag_id).first()
-        session.expunge_all()
-        session.commit()
-        session.close()
-        return obj
+    @provide_session
+    def get_current(cls, dag_id, session=None):
+        return session.query(cls).filter(cls.dag_id == dag_id).first()
 
 
 @functools.total_ordering
@@ -2991,6 +2998,7 @@ class DAG(BaseDag, LoggingMixin):
         """
         Returns a list of dates between the interval received as parameter using this
         dag's schedule interval. Returned dates can be used for execution dates.
+
         :param start_date: the start date of the interval
         :type start_date: datetime
         :param end_date: the end date of the interval, defaults to datetime.utcnow()
@@ -3159,6 +3167,7 @@ class DAG(BaseDag, LoggingMixin):
     def get_active_runs(self, session=None):
         """
         Returns a list of dag run execution dates currently running
+
         :param session:
         :return: List of execution dates
         """
@@ -3174,6 +3183,7 @@ class DAG(BaseDag, LoggingMixin):
     def get_num_active_runs(self, external_trigger=None, session=None):
         """
         Returns the number of active "running" dag runs
+
         :param external_trigger: True for externally triggered active dag runs
         :type external_trigger: bool
         :param session:
@@ -3209,16 +3219,14 @@ class DAG(BaseDag, LoggingMixin):
         return dagrun
 
     @property
-    def latest_execution_date(self):
+    @provide_session
+    def latest_execution_date(self, session=None):
         """
         Returns the latest date for which at least one dag run exists
         """
-        session = settings.Session()
         execution_date = session.query(func.max(DagRun.execution_date)).filter(
             DagRun.dag_id == self.dag_id
         ).scalar()
-        session.commit()
-        session.close()
         return execution_date
 
     @property
@@ -3353,6 +3361,7 @@ class DAG(BaseDag, LoggingMixin):
             dirty_ids.append(dr.dag_id)
         DagStat.update(dirty_ids, session=session)
 
+    @provide_session
     def clear(
             self, start_date=None, end_date=None,
             only_failed=False,
@@ -3360,12 +3369,12 @@ class DAG(BaseDag, LoggingMixin):
             confirm_prompt=False,
             include_subdags=True,
             reset_dag_runs=True,
-            dry_run=False):
+            dry_run=False,
+            session=None):
         """
         Clears a set of task instances associated with the current dag for
         a specified date range.
         """
-        session = settings.Session()
         TI = TaskInstance
         tis = session.query(TI)
         if include_subdags:
@@ -3416,7 +3425,6 @@ class DAG(BaseDag, LoggingMixin):
             print("Bail. Nothing was cleared.")
 
         session.commit()
-        session.close()
         return count
 
     @classmethod
@@ -3626,9 +3634,9 @@ class DAG(BaseDag, LoggingMixin):
         for task in tasks:
             self.add_task(task)
 
-    def db_merge(self):
+    @provide_session
+    def db_merge(self, session=None):
         BO = BaseOperator
-        session = settings.Session()
         tasks = session.query(BO).filter(BO.dag_id == self.dag_id).all()
         for t in tasks:
             session.delete(t)
@@ -3651,6 +3659,7 @@ class DAG(BaseDag, LoggingMixin):
             delay_on_limit_secs=1.0):
         """
         Runs the DAG.
+
         :param start_date: the start date of the range to run
         :type start_date: datetime
         :param end_date: the end date of the range to run
@@ -4063,6 +4072,7 @@ class XCom(Base, LoggingMixin):
         TODO: "pickling" has been deprecated and JSON is preferred. "pickling" will be
         removed in Airflow 2.0. :param enable_pickling: If pickling is not enabled, the
         XCOM value will be parsed as JSON instead.
+
         :return: None
         """
         session.expunge_all()
@@ -4116,6 +4126,7 @@ class XCom(Base, LoggingMixin):
         """
         Retrieve an XCom value, optionally meeting certain criteria.
         TODO: "pickling" has been deprecated and JSON is preferred. "pickling" will be removed in Airflow 2.0.
+
         :param enable_pickling: If pickling is not enabled, the XCOM value will be parsed to JSON instead.
         :return: XCom value
         """
@@ -4378,8 +4389,9 @@ class DagRun(Base, LoggingMixin):
         if self._state != state:
             self._state = state
             if self.dag_id is not None:
-                # something really weird goes on here: if you try to close the session
-                # dag runs will end up detached
+                # FIXME: Due to the scoped_session factor we we don't get a clean
+                # session here, so something really weird goes on:
+                # if you try to close the session dag runs will end up detached
                 session = settings.Session()
                 DagStat.set_dirty(self.dag_id, session=session)
 
@@ -4418,6 +4430,7 @@ class DagRun(Base, LoggingMixin):
              session=None):
         """
         Returns a set of dag runs for the given search criteria.
+
         :param dag_id: the dag_id to find dag runs for
         :type dag_id: integer, list
         :param run_id: defines the the run id for this dag run
@@ -4491,6 +4504,7 @@ class DagRun(Base, LoggingMixin):
     def get_task_instance(self, task_id, session=None):
         """
         Returns the task instance specified by task_id for this dag run
+
         :param task_id: the task id
         """
 
@@ -4541,6 +4555,7 @@ class DagRun(Base, LoggingMixin):
         """
         Determines the overall state of the DagRun based on the state
         of its TaskInstances.
+
         :return: State
         """
 

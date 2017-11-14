@@ -18,6 +18,7 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import getpass
+import logging
 import multiprocessing
 import os
 import psutil
@@ -51,9 +52,10 @@ from airflow.utils.dag_processing import (AbstractDagFileProcessor,
                                           SimpleDag,
                                           SimpleDagBag,
                                           list_py_file_paths)
-from airflow.utils.db import provide_session, pessimistic_connection_handling
+from airflow.utils.db import (
+    create_session, provide_session, pessimistic_connection_handling)
 from airflow.utils.email import send_email
-from airflow.utils.log.logging_mixin import LoggingMixin
+from airflow.utils.log.logging_mixin import LoggingMixin, StreamLogWriter
 from airflow.utils.state import State
 
 Base = models.Base
@@ -110,8 +112,8 @@ class BaseJob(Base, LoggingMixin):
             (conf.getint('scheduler', 'JOB_HEARTBEAT_SEC') * 2.1)
         )
 
-    def kill(self):
-        session = settings.Session()
+    @provide_session
+    def kill(self, session=None):
         job = session.query(BaseJob).filter(BaseJob.id == self.id).first()
         job.end_date = datetime.utcnow()
         try:
@@ -120,7 +122,6 @@ class BaseJob(Base, LoggingMixin):
             self.log.error('on_kill() method failed')
         session.merge(job)
         session.commit()
-        session.close()
         raise AirflowException("Job shut down externally.")
 
     def on_kill(self):
@@ -151,11 +152,10 @@ class BaseJob(Base, LoggingMixin):
         heart rate. If you go over 60 seconds before calling it, it won't
         sleep at all.
         '''
-        session = settings.Session()
-        job = session.query(BaseJob).filter_by(id=self.id).one()
-        make_transient(job)
-        session.commit()
-        session.close()
+        with create_session() as session:
+            job = session.query(BaseJob).filter_by(id=self.id).one()
+            make_transient(job)
+            session.commit()
 
         if job.state == State.SHUTDOWN:
             self.kill()
@@ -167,41 +167,37 @@ class BaseJob(Base, LoggingMixin):
                 0,
                 self.heartrate - (datetime.utcnow() - job.latest_heartbeat).total_seconds())
 
-        # Don't keep session open while sleeping as it leaves a connection open
-        session.close()
         sleep(sleep_for)
 
         # Update last heartbeat time
-        session = settings.Session()
-        job = session.query(BaseJob).filter(BaseJob.id == self.id).first()
-        job.latest_heartbeat = datetime.utcnow()
-        session.merge(job)
-        session.commit()
+        with create_session() as session:
+            job = session.query(BaseJob).filter(BaseJob.id == self.id).first()
+            job.latest_heartbeat = datetime.utcnow()
+            session.merge(job)
+            session.commit()
 
-        self.heartbeat_callback(session=session)
-        session.close()
-        self.log.debug('[heart] Boom.')
+            self.heartbeat_callback(session=session)
+            self.log.debug('[heartbeat]')
 
     def run(self):
         Stats.incr(self.__class__.__name__.lower() + '_start', 1, 1)
         # Adding an entry in the DB
-        session = settings.Session()
-        self.state = State.RUNNING
-        session.add(self)
-        session.commit()
-        id_ = self.id
-        make_transient(self)
-        self.id = id_
+        with create_session() as session:
+            self.state = State.RUNNING
+            session.add(self)
+            session.commit()
+            id_ = self.id
+            make_transient(self)
+            self.id = id_
 
-        # Run
-        self._execute()
+            # Run
+            self._execute()
 
-        # Marking the success in the DB
-        self.end_date = datetime.utcnow()
-        self.state = State.SUCCESS
-        session.merge(self)
-        session.commit()
-        session.close()
+            # Marking the success in the DB
+            self.end_date = datetime.utcnow()
+            self.state = State.SUCCESS
+            session.merge(self)
+            session.commit()
 
         Stats.incr(self.__class__.__name__.lower() + '_end', 1, 1)
 
@@ -241,7 +237,7 @@ class BaseJob(Base, LoggingMixin):
                         TI.execution_date == DR.execution_date))
                 .filter(
                     DR.state == State.RUNNING,
-                    DR.external_trigger.is_(False),
+                    DR.external_trigger == False,
                     DR.run_id.notlike(BackfillJob.ID_PREFIX + '%'),
                     TI.state.in_(resettable_states))).all()
         else:
@@ -285,7 +281,7 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
     # Counter that increments everytime an instance of this class is created
     class_creation_counter = 0
 
-    def __init__(self, file_path, pickle_dags, dag_id_white_list, log_file):
+    def __init__(self, file_path, pickle_dags, dag_id_white_list):
         """
         :param file_path: a Python file containing Airflow DAG definitions
         :type file_path: unicode
@@ -293,11 +289,8 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
         :type pickle_dags: bool
         :param dag_id_whitelist: If specified, only look at these DAG ID's
         :type dag_id_whitelist: list[unicode]
-        :param log_file: the path to the file where log lines should be output
-        :type log_file: unicode
         """
         self._file_path = file_path
-        self._log_file = log_file
         # Queue that's used to pass results from the child process.
         self._result_queue = multiprocessing.Queue()
         # The process that was launched to process the given .
@@ -319,17 +312,12 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
     def file_path(self):
         return self._file_path
 
-    @property
-    def log_file(self):
-        return self._log_file
-
     @staticmethod
     def _launch_process(result_queue,
                         file_path,
                         pickle_dags,
                         dag_id_white_list,
-                        thread_name,
-                        log_file):
+                        thread_name):
         """
         Launch a process to process the given file.
 
@@ -345,35 +333,29 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
         :type dag_id_white_list: list[unicode]
         :param thread_name: the name to use for the process that is launched
         :type thread_name: unicode
-        :param log_file: the logging output for the process should be directed
-        to this file
-        :type log_file: unicode
         :return: the process that was launched
         :rtype: multiprocessing.Process
         """
         def helper():
             # This helper runs in the newly created process
+            log = logging.getLogger("airflow.processor")
 
-            # Re-direct stdout and stderr to a separate log file. Otherwise,
-            # the main log becomes too hard to read. No buffering to enable
-            # responsive file tailing
-            parent_dir, _ = os.path.split(log_file)
+            stdout = StreamLogWriter(log, logging.INFO)
+            stderr = StreamLogWriter(log, logging.WARN)
 
-            _log = LoggingMixin().log
-
-            # Create the parent directory for the log file if necessary.
-            if not os.path.isdir(parent_dir):
-                os.makedirs(parent_dir)
-
-            f = open(log_file, "a")
-            original_stdout = sys.stdout
-            original_stderr = sys.stderr
-
-            sys.stdout = f
-            sys.stderr = f
+            for handler in log.handlers:
+                try:
+                    handler.set_context(file_path)
+                except AttributeError:
+                    # Not all handlers need to have context passed in so we ignore
+                    # the error when handlers do not have set_context defined.
+                    pass
 
             try:
-                configure_logging()
+                # redirect stdout/stderr to log
+                sys.stdout = stdout
+                sys.stderr = stderr
+
                 # Re-configure the ORM engine as there are issues with multiple processes
                 settings.configure_orm()
 
@@ -383,26 +365,23 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
                 threading.current_thread().name = thread_name
                 start_time = time.time()
 
-                _log.info("Started process (PID=%s) to work on %s",
-                             os.getpid(),
-                             file_path)
-                scheduler_job = SchedulerJob(dag_ids=dag_id_white_list)
+                log.info("Started process (PID=%s) to work on %s",
+                         os.getpid(), file_path)
+                scheduler_job = SchedulerJob(dag_ids=dag_id_white_list, log=log)
                 result = scheduler_job.process_file(file_path,
                                                     pickle_dags)
                 result_queue.put(result)
                 end_time = time.time()
-                _log.info(
-                    "Processing %s took %.3f seconds",
-                    file_path, end_time - start_time
+                log.info(
+                    "Processing %s took %.3f seconds", file_path, end_time - start_time
                 )
             except:
                 # Log exceptions through the logging framework.
-                _log.exception("Got an exception! Propagating...")
+                log.exception("Got an exception! Propagating...")
                 raise
             finally:
-                sys.stdout = original_stdout
-                sys.stderr = original_stderr
-                f.close()
+                sys.stdout = sys.__stdout__
+                sys.stderr = sys.__stderr__
 
         p = multiprocessing.Process(target=helper,
                                     args=(),
@@ -419,8 +398,7 @@ class DagFileProcessor(AbstractDagFileProcessor, LoggingMixin):
             self.file_path,
             self._pickle_dags,
             self._dag_id_white_list,
-            "DagFileProcessor{}".format(self._instance_id),
-            self.log_file)
+            "DagFileProcessor{}".format(self._instance_id))
         self._start_time = datetime.utcnow()
 
     def terminate(self, sigkill=False):
@@ -538,6 +516,7 @@ class SchedulerJob(BaseJob):
             processor_poll_interval=1.0,
             run_duration=None,
             do_pickle=False,
+            log=None,
             *args, **kwargs):
         """
         :param dag_id: if specified, only schedule tasks with this DAG ID
@@ -574,6 +553,10 @@ class SchedulerJob(BaseJob):
 
         self.heartrate = conf.getint('scheduler', 'SCHEDULER_HEARTBEAT_SEC')
         self.max_threads = conf.getint('scheduler', 'max_threads')
+
+        if log:
+            self._log = log
+
         self.using_sqlite = False
         if 'sqlite' in conf.get('core', 'sql_alchemy_conn'):
             if self.max_threads > 1:
@@ -591,9 +574,7 @@ class SchedulerJob(BaseJob):
         # Parse and schedule each file no faster than this interval. Default
         # to 3 minutes.
         self.file_process_interval = file_process_interval
-        # Directory where log files for the processes that scheduled the DAGs reside
-        self.child_process_log_directory = conf.get('scheduler',
-                                                    'child_process_log_directory')
+
         self.max_tis_per_query = conf.getint('scheduler', 'max_tis_per_query')
         if run_duration is None:
             self.run_duration = conf.getint('scheduler',
@@ -725,7 +706,6 @@ class SchedulerJob(BaseJob):
                     sla.notification_sent = True
                     session.merge(sla)
             session.commit()
-            session.close()
 
     @staticmethod
     @provide_session
@@ -900,13 +880,13 @@ class SchedulerJob(BaseJob):
                 )
                 return next_run
 
-    def _process_task_instances(self, dag, queue):
+    @provide_session
+    def _process_task_instances(self, dag, queue, session=None):
         """
         This method schedules the tasks for a single DAG by looking at the
         active DAG runs and adding task instances that should run to the
         queue.
         """
-        session = settings.Session()
 
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
@@ -962,8 +942,6 @@ class SchedulerJob(BaseJob):
                         session=session):
                     self.log.debug('Queuing task: %s', ti)
                     queue.append(ti.key)
-
-        session.close()
 
     @provide_session
     def _change_state_for_tis_without_dagrun(self,
@@ -1290,6 +1268,7 @@ class SchedulerJob(BaseJob):
         TI = models.TaskInstance
         # actually enqueue them
         for task_instance in task_instances:
+            simple_dag = simple_dag_bag.get_dag(task_instance.dag_id)
             command = " ".join(TI.generate_command(
                 task_instance.dag_id,
                 task_instance.task_id,
@@ -1301,8 +1280,8 @@ class SchedulerJob(BaseJob):
                 ignore_task_deps=False,
                 ignore_ti_state=False,
                 pool=task_instance.pool,
-                file_path=simple_dag_bag.get_dag(task_instance.dag_id).full_filepath,
-                pickle_id=simple_dag_bag.get_dag(task_instance.dag_id).pickle_id))
+                file_path=simple_dag.full_filepath,
+                pickle_id=simple_dag.pickle_id))
 
             priority = task_instance.priority_weight
             queue = task_instance.queue
@@ -1412,20 +1391,49 @@ class SchedulerJob(BaseJob):
 
         models.DagStat.update([d.dag_id for d in dags])
 
-    def _process_executor_events(self):
+    @provide_session
+    def _process_executor_events(self, simple_dag_bag, session=None):
         """
         Respond to executor events.
-
-        :param executor: the executor that's running the task instances
-        :type executor: BaseExecutor
-        :return: None
         """
-        for key, executor_state in list(self.executor.get_event_buffer().items()):
+        # TODO: this shares quite a lot of code with _manage_executor_state
+
+        TI = models.TaskInstance
+        for key, state in list(self.executor.get_event_buffer(simple_dag_bag.dag_ids)
+                                   .items()):
             dag_id, task_id, execution_date = key
             self.log.info(
                 "Executor reports %s.%s execution_date=%s as %s",
-                dag_id, task_id, execution_date, executor_state
+                dag_id, task_id, execution_date, state
             )
+            if state == State.FAILED or state == State.SUCCESS:
+                qry = session.query(TI).filter(TI.dag_id == dag_id,
+                                               TI.task_id == task_id,
+                                               TI.execution_date == execution_date)
+                ti = qry.first()
+                if not ti:
+                    self.log.warning("TaskInstance %s went missing from the database", ti)
+                    continue
+
+                # TODO: should we fail RUNNING as well, as we do in Backfills?
+                if ti.state == State.QUEUED:
+                    msg = ("Executor reports task instance %s finished (%s) "
+                           "although the task says its %s. Was the task "
+                           "killed externally?".format(ti, state, ti.state))
+                    self.log.error(msg)
+                    try:
+                        simple_dag = simple_dag_bag.get_dag(dag_id)
+                        dagbag = models.DagBag(simple_dag.full_filepath)
+                        dag = dagbag.get_dag(dag_id)
+                        ti.task = dag.get_task(task_id)
+                        ti.handle_failure(msg)
+                    except Exception:
+                        self.log.error("Cannot load the dag bag to handle failure for %s"
+                                       ". Setting task to FAILED without callbacks or "
+                                       "retries. Do you have enough resources?", ti)
+                        ti.state = State.FAILED
+                        session.merge(ti)
+                        session.commit()
 
     def _log_file_processing_stats(self,
                                    known_file_paths,
@@ -1518,17 +1526,15 @@ class SchedulerJob(BaseJob):
         known_file_paths = list_py_file_paths(self.subdir)
         self.log.info("There are %s files in %s", len(known_file_paths), self.subdir)
 
-        def processor_factory(file_path, log_file_path):
+        def processor_factory(file_path):
             return DagFileProcessor(file_path,
                                     pickle_dags,
-                                    self.dag_ids,
-                                    log_file_path)
+                                    self.dag_ids)
 
         processor_manager = DagFileProcessorManager(self.subdir,
                                                     known_file_paths,
                                                     self.max_threads,
                                                     self.file_process_interval,
-                                                    self.child_process_log_directory,
                                                     self.num_runs,
                                                     processor_factory)
 
@@ -1576,10 +1582,8 @@ class SchedulerJob(BaseJob):
         """
         self.executor.start()
 
-        session = settings.Session()
         self.log.info("Resetting orphaned tasks for active dag runs")
-        self.reset_state_for_orphaned_tasks(session=session)
-        session.close()
+        self.reset_state_for_orphaned_tasks()
 
         execute_start_time = datetime.utcnow()
 
@@ -1626,8 +1630,8 @@ class SchedulerJob(BaseJob):
                 processor_manager.wait_until_finished()
 
             # Send tasks for execution if available
+            simple_dag_bag = SimpleDagBag(simple_dags)
             if len(simple_dags) > 0:
-                simple_dag_bag = SimpleDagBag(simple_dags)
 
                 # Handle cases where a DAG run state is set (perhaps manually) to
                 # a non-running state. Handle task instances that belong to
@@ -1655,7 +1659,7 @@ class SchedulerJob(BaseJob):
             self.executor.heartbeat()
 
             # Process events from the executor
-            self._process_executor_events()
+            self._process_executor_events(simple_dag_bag)
 
             # Heartbeat the scheduler periodically
             time_since_last_heartbeat = (datetime.utcnow() -
@@ -1968,9 +1972,7 @@ class BackfillJob(BaseJob):
                     "reaching concurrency limits. Re-adding task to queue.",
                     ti
                 )
-                session = settings.Session()
-                ti.set_state(State.SCHEDULED, session=session)
-                session.close()
+                ti.set_state(State.SCHEDULED)
                 ti_status.started.pop(key)
                 ti_status.to_run[key] = ti
 
@@ -2381,12 +2383,12 @@ class BackfillJob(BaseJob):
 
         ti_status.executed_dag_run_dates.update(processed_dag_run_dates)
 
-    def _execute(self):
+    @provide_session
+    def _execute(self, session=None):
         """
         Initializes all components required to run a dag for a specified date range and
         calls helper method to execute the tasks.
         """
-        session = settings.Session()
         ti_status = BackfillJob._DagRunTaskStatus()
 
         start_date = self.bf_start_date
@@ -2442,7 +2444,6 @@ class BackfillJob(BaseJob):
         finally:
             executor.end()
             session.commit()
-            session.close()
 
         self.log.info("Backfill done. Exiting.")
 
