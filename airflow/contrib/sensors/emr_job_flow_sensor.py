@@ -25,9 +25,10 @@ class EmrJobFlowSensor(EmrBaseSensor):
     :type job_flow_id: string
     """
 
-    NON_TERMINAL_STATES = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING', 'TERMINATING']
-    TERMINAL_MESSAGES = ['INTERNAL_ERROR', 'VALIDATION_ERROR', 'INSTANCE_FAILURE',
-                         'INSTANCE_FLEET_TIMEOUT', 'BOOTSTRAP_FAILURE', 'STEP_FAILURE']
+    NON_TERMINAL_STATES = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING']
+    TERMINATION_STATES = ['TERMINATING', 'TERMINATED']
+    TERMINAL_CODES = ['INTERNAL_ERROR', 'VALIDATION_ERROR', 'INSTANCE_FAILURE',
+                      'INSTANCE_FLEET_TIMEOUT', 'BOOTSTRAP_FAILURE', 'STEP_FAILURE']
     FAILED_STATE = 'TERMINATED_WITH_ERRORS'
     template_fields = ['job_flow_id']
     template_ext = ()
@@ -49,5 +50,5 @@ class EmrJobFlowSensor(EmrBaseSensor):
     def state_from_response(self, response):
         return response['Cluster']['Status']['State']
 
-    def message_from_response(self, response):
-        return response['Cluster']['Status']['StateChangeReason']['Message']
+    def code_from_response(self, response):
+        return response['Cluster']['Status']['StateChangeReason']['Code']
