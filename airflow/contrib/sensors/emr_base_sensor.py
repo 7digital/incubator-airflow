@@ -40,14 +40,14 @@ class EmrBaseSensor(BaseSensorOperator):
             return False
 
         state = self.state_from_response(response)
-        message = self.message_from_response(response)
+        code = self.code_from_response(response)
         self.log.info('Job flow currently %s', state)
 
         if state in self.NON_TERMINAL_STATES:
-            if message in self.TERMINAL_MESSAGES:
-                raise AirflowException('EMR job failed: %s', message)
-            else:
-                return False
+            return False
+
+        if (state in self.TERMINATING_STATES) and (code in self.TERMINATION_CODES):
+            raise AirflowException('EMR job failed: %s', code)
 
         if state == self.FAILED_STATE:
             raise AirflowException('EMR job failed')
