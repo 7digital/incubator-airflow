@@ -153,10 +153,7 @@ oracle = ['cx_Oracle>=5.1.2']
 postgres = ['psycopg2>=2.7.1']
 ssh = ['paramiko>=2.1.1']
 salesforce = ['simple-salesforce>=0.72']
-s3 = [
-    'boto>=2.36.0',
-    'filechunkio>=1.6',
-]
+s3 = ['boto3>=1.0.0']
 samba = ['pysmbclient>=0.1.3']
 slack = ['slackclient>=1.0.0']
 statsd = ['statsd>=3.0.1, <4.0']
@@ -226,10 +223,12 @@ def do_setup():
             'future>=0.16.0, <0.17',
             'gitpython>=2.0.2',
             'gunicorn>=19.4.0, <20.0',
+            'iso8601>=0.1.12',
             'jinja2>=2.7.3, <2.9.0',
             'lxml>=3.6.0, <4.0',
             'markdown>=2.5.2, <3.0',
             'pandas>=0.17.1, <1.0.0',
+            'pendulum==1.3.2',
             'psutil>=4.2.0, <5.0.0',
             'pygments>=2.0.1, <3.0',
             'python-daemon>=2.1.1, <2.2',
@@ -238,8 +237,10 @@ def do_setup():
             'requests>=2.5.1, <3',
             'setproctitle>=1.1.8, <2',
             'sqlalchemy>=0.9.8',
+            'sqlalchemy-utc>=0.9.0',
             'tabulate>=0.7.5, <0.8.0',
             'thrift>=0.9.2',
+            'tzlocal>=1.4',
             'zope.deprecation>=4.0, <5.0',
         ],
         setup_requires=[
