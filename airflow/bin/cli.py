@@ -40,6 +40,7 @@ import traceback
 import time
 import psutil
 import re
+from urllib.parse import urlunparse
 
 import airflow
 from airflow import api
@@ -53,7 +54,8 @@ from airflow.models import (DagModel, DagBag, TaskInstance,
 
 from airflow.ti_deps.dep_context import (DepContext, SCHEDULER_DEPS)
 from airflow.utils import db as db_utils
-from airflow.utils.log.logging_mixin import LoggingMixin
+from airflow.utils.log.logging_mixin import (LoggingMixin, redirect_stderr,
+                                             redirect_stdout, set_context)
 from airflow.www.app import cached_app
 
 from sqlalchemy import func
@@ -326,7 +328,7 @@ def run(args, dag=None):
     # Disable connection pooling to reduce the # of connections on the DB
     # while it's waiting for the task to finish.
     settings.configure_orm(disable_connection_pool=True)
-    db_utils.pessimistic_connection_handling()
+
     if dag:
         args.dag_id = dag.dag_id
 
@@ -360,84 +362,68 @@ def run(args, dag=None):
     task = dag.get_task(task_id=args.task_id)
     ti = TaskInstance(task, args.execution_date)
     ti.refresh_from_db()
-
-    log = logging.getLogger('airflow.task')
-    if args.raw:
-        log = logging.getLogger('airflow.task.raw')
-
-    for handler in log.handlers:
-        try:
-            handler.set_context(ti)
-        except AttributeError:
-            # Not all handlers need to have context passed in so we ignore
-            # the error when handlers do not have set_context defined.
-            pass
+    ti.init_run_context()
 
     hostname = socket.getfqdn()
-    log.info("Running on host %s", hostname)
+    log.info("Running %s on host %s", ti, hostname)
 
-    if args.local:
-        run_job = jobs.LocalTaskJob(
-            task_instance=ti,
-            mark_success=args.mark_success,
-            pickle_id=args.pickle,
-            ignore_all_deps=args.ignore_all_dependencies,
-            ignore_depends_on_past=args.ignore_depends_on_past,
-            ignore_task_deps=args.ignore_dependencies,
-            ignore_ti_state=args.force,
-            pool=args.pool)
-        run_job.run()
-    elif args.raw:
-        ti._run_raw_task(
-            mark_success=args.mark_success,
-            job_id=args.job_id,
-            pool=args.pool,
-        )
-    else:
-        pickle_id = None
-        if args.ship_dag:
-            try:
-                # Running remotely, so pickling the DAG
-                session = settings.Session()
-                pickle = DagPickle(dag)
-                session.add(pickle)
-                session.commit()
-                pickle_id = pickle.id
-                # TODO: This should be written to a log
-                print((
-                          'Pickled dag {dag} '
-                          'as pickle_id:{pickle_id}').format(**locals()))
-            except Exception as e:
-                print('Could not pickle the DAG')
-                print(e)
-                raise e
+    with redirect_stdout(log, logging.INFO), redirect_stderr(log, logging.WARN):
+        if args.local:
+            run_job = jobs.LocalTaskJob(
+                task_instance=ti,
+                mark_success=args.mark_success,
+                pickle_id=args.pickle,
+                ignore_all_deps=args.ignore_all_dependencies,
+                ignore_depends_on_past=args.ignore_depends_on_past,
+                ignore_task_deps=args.ignore_dependencies,
+                ignore_ti_state=args.force,
+                pool=args.pool)
+            run_job.run()
+        elif args.raw:
+            ti._run_raw_task(
+                mark_success=args.mark_success,
+                job_id=args.job_id,
+                pool=args.pool,
+            )
+        else:
+            pickle_id = None
+            if args.ship_dag:
+                try:
+                    # Running remotely, so pickling the DAG
+                    session = settings.Session()
+                    pickle = DagPickle(dag)
+                    session.add(pickle)
+                    session.commit()
+                    pickle_id = pickle.id
+                    # TODO: This should be written to a log
+                    print((
+                              'Pickled dag {dag} '
+                              'as pickle_id:{pickle_id}').format(**locals()))
+                except Exception as e:
+                    print('Could not pickle the DAG')
+                    print(e)
+                    raise e
 
-        executor = GetDefaultExecutor()
-        executor.start()
-        print("Sending to executor.")
-        executor.queue_task_instance(
-            ti,
-            mark_success=args.mark_success,
-            pickle_id=pickle_id,
-            ignore_all_deps=args.ignore_all_dependencies,
-            ignore_depends_on_past=args.ignore_depends_on_past,
-            ignore_task_deps=args.ignore_dependencies,
-            ignore_ti_state=args.force,
-            pool=args.pool)
-        executor.heartbeat()
-        executor.end()
+            executor = GetDefaultExecutor()
+            executor.start()
+            print("Sending to executor.")
+            executor.queue_task_instance(
+                ti,
+                mark_success=args.mark_success,
+                pickle_id=pickle_id,
+                ignore_all_deps=args.ignore_all_dependencies,
+                ignore_depends_on_past=args.ignore_depends_on_past,
+                ignore_task_deps=args.ignore_dependencies,
+                ignore_ti_state=args.force,
+                pool=args.pool)
+            executor.heartbeat()
+            executor.end()
 
     # Child processes should not flush or upload to remote
     if args.raw:
         return
 
-    # Force the log to flush. The flush is important because we
-    # might subsequently read from the log to insert into S3 or
-    # Google cloud storage. Explicitly close the handler is
-    # needed in order to upload to remote storage services.
-    for handler in log.handlers:
-        handler.flush()
-        handler.close()
+    logging.shutdown()
 
 
 def task_failed_deps(args):
@@ -723,7 +709,7 @@ def webserver(args):
             '-b', args.hostname + ':' + str(args.port),
             '-n', 'airflow-webserver',
             '-p', str(pid),
-            '-c', 'airflow.www.gunicorn_config'
+            '-c', 'python:airflow.www.gunicorn_config'
         ]
 
         if args.access_logfile:
@@ -768,7 +754,7 @@ def webserver(args):
                 },
             )
             with ctx:
-                subprocess.Popen(run_args)
+                subprocess.Popen(run_args, close_fds=True)
 
                 # Reading pid file directly, since Popen#pid doesn't
                 # seem to return the right value with DaemonContext.
@@ -787,7 +773,7 @@ def webserver(args):
             stdout.close()
             stderr.close()
         else:
-            gunicorn_master_proc = subprocess.Popen(run_args)
+            gunicorn_master_proc = subprocess.Popen(run_args, close_fds=True)
 
             signal.signal(signal.SIGINT, kill_proc)
             signal.signal(signal.SIGTERM, kill_proc)
@@ -878,7 +864,7 @@ def worker(args):
             stderr=stderr,
         )
         with ctx:
-            sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
+            sp = subprocess.Popen(['airflow', 'serve_logs'], env=env, close_fds=True)
             worker.run(**options)
             sp.kill()
 
@@ -888,7 +874,7 @@ def worker(args):
         signal.signal(signal.SIGINT, sigint_handler)
         signal.signal(signal.SIGTERM, sigint_handler)
 
-        sp = subprocess.Popen(['airflow', 'serve_logs'], env=env)
+        sp = subprocess.Popen(['airflow', 'serve_logs'], env=env, close_fds=True)
 
         worker.run(**options)
         sp.kill()
@@ -931,11 +917,15 @@ def version(args):  # noqa
     print(settings.HEADER + "  v" + airflow.__version__)
 
 
+alternative_conn_specs = ['conn_type', 'conn_host',
+                          'conn_login', 'conn_password', 'conn_schema', 'conn_port']
+
+
 def connections(args):
     if args.list:
         # Check that no other flags were passed to the command
         invalid_args = list()
-        for arg in ['conn_id', 'conn_uri', 'conn_extra']:
+        for arg in ['conn_id', 'conn_uri', 'conn_extra'] + alternative_conn_specs:
             if getattr(args, arg) is not None:
                 invalid_args.append(arg)
         if invalid_args:
@@ -960,7 +950,7 @@ def connections(args):
     if args.delete:
         # Check that only the `conn_id` arg was passed to the command
         invalid_args = list()
-        for arg in ['conn_uri', 'conn_extra']:
+        for arg in ['conn_uri', 'conn_extra'] + alternative_conn_specs:
             if getattr(args, arg) is not None:
                 invalid_args.append(arg)
         if invalid_args:
@@ -1004,16 +994,32 @@ def connections(args):
     if args.add:
         # Check that the conn_id and conn_uri args were passed to the command:
         missing_args = list()
-        for arg in ['conn_id', 'conn_uri']:
-            if getattr(args, arg) is None:
-                missing_args.append(arg)
+        invalid_args = list()
+        if not args.conn_id:
+            missing_args.append('conn_id')
+        if args.conn_uri:
+            for arg in alternative_conn_specs:
+                if getattr(args, arg) is not None:
+                    invalid_args.append(arg)
+        elif not args.conn_type:
+            missing_args.append('conn_uri or conn_type')
         if missing_args:
             msg = ('\n\tThe following args are required to add a connection:' +
                    ' {missing!r}\n'.format(missing=missing_args))
             print(msg)
+        if invalid_args:
+            msg = ('\n\tThe following args are not compatible with the ' +
+                   '--add flag and --conn_uri flag: {invalid!r}\n')
+            msg = msg.format(invalid=invalid_args)
+            print(msg)
+        if missing_args or invalid_args:
             return
 
-        new_conn = Connection(conn_id=args.conn_id, uri=args.conn_uri)
+        if args.conn_uri:
+            new_conn = Connection(conn_id=args.conn_id, uri=args.conn_uri)
+        else:
+            new_conn = Connection(conn_id=args.conn_id, conn_type=args.conn_type, host=args.conn_host,
+                                  login=args.conn_login, password=args.conn_password, schema=args.conn_schema, port=args.conn_port)
         if args.conn_extra is not None:
             new_conn.set_extra(args.conn_extra)
 
@@ -1024,7 +1030,8 @@ def connections(args):
             session.add(new_conn)
             session.commit()
             msg = '\n\tSuccessfully added `conn_id`={conn_id} : {uri}\n'
-            msg = msg.format(conn_id=new_conn.conn_id, uri=args.conn_uri)
+            msg = msg.format(conn_id=new_conn.conn_id, uri=args.conn_uri or urlunparse((args.conn_type, '{login}:{password}@{host}:{port}'.format(
+                login=args.conn_login or '', password=args.conn_password or '', host=args.conn_host or '', port=args.conn_port or ''), args.conn_schema or '', '', '', '')))
             print(msg)
         else:
             msg = '\n\tA connection with `conn_id`={conn_id} already exists\n'
@@ -1420,7 +1427,31 @@ class CLIFactory(object):
             type=str),
         'conn_uri': Arg(
             ('--conn_uri',),
-            help='Connection URI, required to add a connection',
+            help='Connection URI, required to add a connection without conn_type',
+            type=str),
+        'conn_type': Arg(
+            ('--conn_type',),
+            help='Connection type, required to add a connection without conn_uri',
+            type=str),
+        'conn_host': Arg(
+            ('--conn_host',),
+            help='Connection host, optional when adding a connection',
+            type=str),
+        'conn_login': Arg(
+            ('--conn_login',),
+            help='Connection login, optional when adding a connection',
+            type=str),
+        'conn_password': Arg(
+            ('--conn_password',),
+            help='Connection password, optional when adding a connection',
+            type=str),
+        'conn_schema': Arg(
+            ('--conn_schema',),
+            help='Connection schema, optional when adding a connection',
+            type=str),
+        'conn_port': Arg(
+            ('--conn_port',),
+            help='Connection port, optional when adding a connection',
             type=str),
         'conn_extra': Arg(
             ('--conn_extra',),
@@ -1558,7 +1589,7 @@ class CLIFactory(object):
             'func': connections,
             'help': "List/Add/Delete connections",
             'args': ('list_connections', 'add_connection', 'delete_connection',
-                     'conn_id', 'conn_uri', 'conn_extra'),
+                     'conn_id', 'conn_uri', 'conn_extra') + tuple(alternative_conn_specs),
         },
     )
     subparsers_dict = {sp['func'].__name__: sp for sp in subparsers}

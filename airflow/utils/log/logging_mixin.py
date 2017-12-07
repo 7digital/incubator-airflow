@@ -18,14 +18,19 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import logging
+import sys
 import warnings
+
 from builtins import object
+from contextlib import contextmanager
 
 
 class LoggingMixin(object):
     """
     Convenience super-class to have a logger configured with the class name
     """
+    def __init__(self, context=None):
+        self._set_context(context)
 
     # We want to deprecate the logger property in Airflow 2.0
     # The log property is the de facto standard in most programming languages
@@ -50,12 +55,90 @@ class LoggingMixin(object):
             )
             return self._log
 
-    def set_log_contexts(self, task_instance):
+    def _set_context(self, context):
+        if context is not None:
+            set_context(self.log, context)
+
+
+class StreamLogWriter(object):
+    encoding = False
+
+    """
+    Allows to redirect stdout and stderr to logger
+    """
+    def __init__(self, logger, level):
         """
-        Set the context for all handlers of current logger.
+        :param log: The log level method to write to, ie. log.debug, log.warning
+        :return:
         """
-        for handler in self.log.handlers:
+        self.logger = logger
+        self.level = level
+        self._buffer = str()
+
+    def write(self, message):
+        """
+        Do whatever it takes to actually log the specified logging record
+        :param message: message to log
+        """
+        if not message.endswith("\n"):
+            self._buffer += message
+        else:
+            self._buffer += message
+            self.logger.log(self.level, self._buffer)
+            self._buffer = str()
+
+    def flush(self):
+        """
+        Ensure all logging output has been flushed
+        """
+        if len(self._buffer) > 0:
+            self.logger.log(self.level, self._buffer)
+            self._buffer = str()
+
+    def isatty(self):
+        """
+        Returns False to indicate the fd is not connected to a tty(-like) device.
+        For compatibility reasons.
+        """
+        return False
+
+
+@contextmanager
+def redirect_stdout(logger, level):
+    writer = StreamLogWriter(logger, level)
+    try:
+        sys.stdout = writer
+        yield
+    finally:
+        sys.stdout = sys.__stdout__
+
+
+@contextmanager
+def redirect_stderr(logger, level):
+    writer = StreamLogWriter(logger, level)
+    try:
+        sys.stderr = writer
+        yield
+    finally:
+        sys.stderr = sys.__stderr__
+
+
+def set_context(logger, value):
+    """
+    Walks the tree of loggers and tries to set the context for each handler
+    :param logger: logger
+    :param value: value to set
+    """
+    _logger = logger
+    while _logger:
+        for handler in _logger.handlers:
             try:
-                handler.set_context(task_instance)
+                handler.set_context(value)
             except AttributeError:
+                # Not all handlers need to have context passed in so we ignore
+                # the error when handlers do not have set_context defined.
                 pass
+        if _logger.propagate is True:
+            _logger = _logger.parent
+        else:
+            _logger = None

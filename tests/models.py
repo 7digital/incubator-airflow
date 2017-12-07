@@ -20,6 +20,7 @@ from __future__ import unicode_literals
 import datetime
 import logging
 import os
+import pendulum
 import unittest
 import time
 
@@ -36,13 +37,14 @@ from airflow.operators.bash_operator import BashOperator
 from airflow.operators.python_operator import PythonOperator
 from airflow.operators.python_operator import ShortCircuitOperator
 from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
+from airflow.utils import timezone
 from airflow.utils.state import State
 from airflow.utils.trigger_rule import TriggerRule
 from mock import patch
 from parameterized import parameterized
 
 
-DEFAULT_DATE = datetime.datetime(2016, 1, 1)
+DEFAULT_DATE = timezone.datetime(2016, 1, 1)
 TEST_DAGS_FOLDER = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), 'dags')
 
@@ -320,7 +322,7 @@ class DagStatTest(unittest.TestCase):
         with dag:
             op1 = DummyOperator(task_id='A')
 
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
         dr = dag.create_dagrun(
             run_id='manual__' + now.isoformat(),
             execution_date=now,
@@ -345,7 +347,7 @@ class DagStatTest(unittest.TestCase):
 class DagRunTest(unittest.TestCase):
 
     def create_dag_run(self, dag, state=State.RUNNING, task_states=None, execution_date=None):
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
         if execution_date is None:
             execution_date = now
         dag_run = dag.create_dagrun(
@@ -367,14 +369,14 @@ class DagRunTest(unittest.TestCase):
 
     def test_id_for_date(self):
         run_id = models.DagRun.id_for_date(
-            datetime.datetime(2015, 1, 2, 3, 4, 5, 6, None))
+            timezone.datetime(2015, 1, 2, 3, 4, 5, 6))
         self.assertEqual(
             'scheduled__2015-01-02T03:04:05', run_id,
             'Generated run_id did not match expectations: {0}'.format(run_id))
 
     def test_dagrun_find(self):
         session = settings.Session()
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
 
         dag_id1 = "test_dagrun_find_externally_triggered"
         dag_run = models.DagRun(
@@ -411,7 +413,7 @@ class DagRunTest(unittest.TestCase):
         """
         dag = DAG(
             dag_id='test_dagrun_success_when_all_skipped',
-            start_date=datetime.datetime(2017, 1, 1)
+            start_date=timezone.datetime(2017, 1, 1)
         )
         dag_task1 = ShortCircuitOperator(
             task_id='test_short_circuit_false',
@@ -459,7 +461,7 @@ class DagRunTest(unittest.TestCase):
 
         dag.clear()
 
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
         dr = dag.create_dagrun(run_id='test_dagrun_success_conditions',
                                state=State.RUNNING,
                                execution_date=now,
@@ -498,7 +500,7 @@ class DagRunTest(unittest.TestCase):
             op2.set_upstream(op1)
 
         dag.clear()
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
         dr = dag.create_dagrun(run_id='test_dagrun_deadlock',
                                state=State.RUNNING,
                                execution_date=now,
@@ -517,13 +519,46 @@ class DagRunTest(unittest.TestCase):
         dr.update_state()
         self.assertEqual(dr.state, State.FAILED)
 
+    def test_dagrun_no_deadlock(self):
+        session = settings.Session()
+        dag = DAG('test_dagrun_no_deadlock',
+                  start_date=DEFAULT_DATE)
+        with dag:
+            op1 = DummyOperator(task_id='dop', depends_on_past=True)
+            op2 = DummyOperator(task_id='tc', task_concurrency=1)
+
+        dag.clear()
+        dr = dag.create_dagrun(run_id='test_dagrun_no_deadlock_1',
+                               state=State.RUNNING,
+                               execution_date=DEFAULT_DATE,
+                               start_date=DEFAULT_DATE)
+        dr2 = dag.create_dagrun(run_id='test_dagrun_no_deadlock_2',
+                                state=State.RUNNING,
+                                execution_date=DEFAULT_DATE + datetime.timedelta(days=1),
+                                start_date=DEFAULT_DATE + datetime.timedelta(days=1))
+        ti1_op1 = dr.get_task_instance(task_id='dop')
+        ti2_op1 = dr2.get_task_instance(task_id='dop')
+        ti2_op1 = dr.get_task_instance(task_id='tc')
+        ti2_op2 = dr.get_task_instance(task_id='tc')
+        ti1_op1.set_state(state=State.RUNNING, session=session)
+        dr.update_state()
+        dr2.update_state()
+        self.assertEqual(dr.state, State.RUNNING)
+        self.assertEqual(dr2.state, State.RUNNING)
+
+        ti2_op1.set_state(state=State.RUNNING, session=session)
+        dr.update_state()
+        dr2.update_state()
+        self.assertEqual(dr.state, State.RUNNING)
+        self.assertEqual(dr2.state, State.RUNNING)
+
     def test_get_task_instance_on_empty_dagrun(self):
         """
         Make sure that a proper value is returned when a dagrun has no task instances
         """
         dag = DAG(
             dag_id='test_get_task_instance_on_empty_dagrun',
-            start_date=datetime.datetime(2017, 1, 1)
+            start_date=timezone.datetime(2017, 1, 1)
         )
         dag_task1 = ShortCircuitOperator(
             task_id='test_short_circuit_false',
@@ -532,7 +567,7 @@ class DagRunTest(unittest.TestCase):
 
         session = settings.Session()
 
-        now = datetime.datetime.now()
+        now = timezone.utcnow()
 
         # Don't use create_dagrun since it will create the task instances too which we
         # don't want
@@ -556,14 +591,14 @@ class DagRunTest(unittest.TestCase):
             dag_id='test_latest_runs_1',
             start_date=DEFAULT_DATE)
         dag_1_run_1 = self.create_dag_run(dag,
-                execution_date=datetime.datetime(2015, 1, 1))
+                execution_date=timezone.datetime(2015, 1, 1))
         dag_1_run_2 = self.create_dag_run(dag,
-                execution_date=datetime.datetime(2015, 1, 2))
+                execution_date=timezone.datetime(2015, 1, 2))
         dagruns = models.DagRun.get_latest_runs(session)
         session.close()
         for dagrun in dagruns:
             if dagrun.dag_id == 'test_latest_runs_1':
-                self.assertEqual(dagrun.execution_date, datetime.datetime(2015, 1, 2))
+                self.assertEqual(dagrun.execution_date, timezone.datetime(2015, 1, 2))
 
     def test_is_backfill(self):
         dag = DAG(dag_id='test_is_backfill', start_date=DEFAULT_DATE)
@@ -802,7 +837,7 @@ class TaskInstanceTest(unittest.TestCase):
                   max_active_runs=1, concurrency=2)
         task = DummyOperator(task_id='test_requeue_over_concurrency_op', dag=dag)
 
-        ti = TI(task=task, execution_date=datetime.datetime.now())
+        ti = TI(task=task, execution_date=timezone.utcnow())
         ti.run()
         self.assertEqual(ti.state, models.State.NONE)
 
@@ -819,9 +854,9 @@ class TaskInstanceTest(unittest.TestCase):
         dag = models.DAG(dag_id='test_run_pooling_task')
         task = DummyOperator(task_id='test_run_pooling_task_op', dag=dag,
                              pool='test_run_pooling_task_pool', owner='airflow',
-                             start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+                             start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
         ti.run()
         self.assertEqual(ti.state, models.State.SUCCESS)
 
@@ -840,9 +875,9 @@ class TaskInstanceTest(unittest.TestCase):
             dag=dag,
             pool='test_run_pooling_task_with_mark_success_pool',
             owner='airflow',
-            start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+            start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
         ti.run(mark_success=True)
         self.assertEqual(ti.state, models.State.SUCCESS)
 
@@ -861,9 +896,9 @@ class TaskInstanceTest(unittest.TestCase):
             dag=dag,
             python_callable=raise_skip_exception,
             owner='airflow',
-            start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+            start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
         ti.run()
         self.assertEqual(models.State.SKIPPED, ti.state)
 
@@ -879,7 +914,7 @@ class TaskInstanceTest(unittest.TestCase):
             retry_delay=datetime.timedelta(seconds=3),
             dag=dag,
             owner='airflow',
-            start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+            start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
 
         def run_with_error(ti):
             try:
@@ -888,7 +923,7 @@ class TaskInstanceTest(unittest.TestCase):
                 pass
 
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
 
         # first run -- up for retry
         run_with_error(ti)
@@ -920,7 +955,7 @@ class TaskInstanceTest(unittest.TestCase):
             retry_delay=datetime.timedelta(seconds=0),
             dag=dag,
             owner='airflow',
-            start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+            start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
 
         def run_with_error(ti):
             try:
@@ -929,7 +964,7 @@ class TaskInstanceTest(unittest.TestCase):
                 pass
 
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
 
         # first run -- up for retry
         run_with_error(ti)
@@ -969,25 +1004,28 @@ class TaskInstanceTest(unittest.TestCase):
             max_retry_delay=max_delay,
             dag=dag,
             owner='airflow',
-            start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
+            start_date=timezone.datetime(2016, 2, 1, 0, 0, 0))
         ti = TI(
             task=task, execution_date=DEFAULT_DATE)
-        ti.end_date = datetime.datetime.now()
+        ti.end_date = pendulum.instance(timezone.utcnow())
 
         ti.try_number = 1
         dt = ti.next_retry_datetime()
         # between 30 * 2^0.5 and 30 * 2^1 (15 and 30)
-        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=20.0))
+        period = ti.end_date.add(seconds=30) - ti.end_date.add(seconds=15)
+        self.assertTrue(dt in period)
 
         ti.try_number = 4
         dt = ti.next_retry_datetime()
         # between 30 * 2^2 and 30 * 2^3 (120 and 240)
-        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=181.0))
+        period = ti.end_date.add(seconds=240) - ti.end_date.add(seconds=120)
+        self.assertTrue(dt in period)
 
         ti.try_number = 6
         dt = ti.next_retry_datetime()
         # between 30 * 2^4 and 30 * 2^5 (480 and 960)
-        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=825.0))
+        period = ti.end_date.add(seconds=960) - ti.end_date.add(seconds=480)
+        self.assertTrue(dt in period)
 
         ti.try_number = 9
         dt = ti.next_retry_datetime()
@@ -1066,7 +1104,7 @@ class TaskInstanceTest(unittest.TestCase):
                                      failed, upstream_failed, done,
                                      flag_upstream_failed,
                                      expect_state, expect_completed):
-        start_date = datetime.datetime(2016, 2, 1, 0, 0, 0)
+        start_date = timezone.datetime(2016, 2, 1, 0, 0, 0)
         dag = models.DAG('test-dag', start_date=start_date)
         downstream = DummyOperator(task_id='downstream',
                                    dag=dag, owner='airflow',
@@ -1104,8 +1142,8 @@ class TaskInstanceTest(unittest.TestCase):
             dag=dag,
             pool='test_xcom',
             owner='airflow',
-            start_date=datetime.datetime(2016, 6, 2, 0, 0, 0))
-        exec_date = datetime.datetime.now()
+            start_date=timezone.datetime(2016, 6, 2, 0, 0, 0))
+        exec_date = timezone.utcnow()
         ti = TI(
             task=task, execution_date=exec_date)
         ti.run(mark_success=True)
@@ -1138,8 +1176,8 @@ class TaskInstanceTest(unittest.TestCase):
             dag=dag,
             pool='test_xcom',
             owner='airflow',
-            start_date=datetime.datetime(2016, 6, 2, 0, 0, 0))
-        exec_date = datetime.datetime.now()
+            start_date=timezone.datetime(2016, 6, 2, 0, 0, 0))
+        exec_date = timezone.utcnow()
         ti = TI(
             task=task, execution_date=exec_date)
         ti.run(mark_success=True)
@@ -1180,8 +1218,8 @@ class TaskInstanceTest(unittest.TestCase):
             dag=dag,
             python_callable=lambda: 'error',
             owner='airflow',
-            start_date=datetime.datetime(2017, 2, 1))
-        ti = TI(task=task, execution_date=datetime.datetime.now())
+            start_date=timezone.datetime(2017, 2, 1))
+        ti = TI(task=task, execution_date=timezone.utcnow())
 
         with self.assertRaises(TestError):
             ti.run()
@@ -1190,7 +1228,7 @@ class TaskInstanceTest(unittest.TestCase):
         dag = models.DAG(dag_id='test_check_and_change_state_before_execution')
         task = DummyOperator(task_id='task', dag=dag, start_date=DEFAULT_DATE)
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=timezone.utcnow())
         self.assertTrue(ti._check_and_change_state_before_execution())
 
     def test_check_and_change_state_before_execution_dep_not_met(self):
@@ -1199,9 +1237,32 @@ class TaskInstanceTest(unittest.TestCase):
         task2= DummyOperator(task_id='task2', dag=dag, start_date=DEFAULT_DATE)
         task >> task2
         ti = TI(
-            task=task2, execution_date=datetime.datetime.now())
+            task=task2, execution_date=timezone.utcnow())
         self.assertFalse(ti._check_and_change_state_before_execution())
-        
+
+    def test_get_num_running_task_instances(self):
+        session = settings.Session()
+
+        dag = models.DAG(dag_id='test_get_num_running_task_instances')
+        dag2 = models.DAG(dag_id='test_get_num_running_task_instances_dummy')
+        task = DummyOperator(task_id='task', dag=dag, start_date=DEFAULT_DATE)
+        task2 = DummyOperator(task_id='task', dag=dag2, start_date=DEFAULT_DATE)
+
+        ti1 = TI(task=task, execution_date=DEFAULT_DATE)
+        ti2 = TI(task=task, execution_date=DEFAULT_DATE + datetime.timedelta(days=1))
+        ti3 = TI(task=task2, execution_date=DEFAULT_DATE)
+        ti1.state = State.RUNNING
+        ti2.state = State.QUEUED
+        ti3.state = State.RUNNING
+        session.add(ti1)
+        session.add(ti2)
+        session.add(ti3)
+        session.commit()
+
+        self.assertEquals(1, ti1.get_num_running_task_instances(session=session))
+        self.assertEquals(1, ti2.get_num_running_task_instances(session=session))
+        self.assertEquals(1, ti3.get_num_running_task_instances(session=session))
+
 
 class ClearTasksTest(unittest.TestCase):
     def test_clear_task_instances(self):
@@ -1401,7 +1462,7 @@ class ClearTasksTest(unittest.TestCase):
 
     def test_xcom_disable_pickle_type(self):
         json_obj = {"key": "value"}
-        execution_date = datetime.datetime.now()
+        execution_date = timezone.utcnow()
         key = "xcom_test1"
         dag_id = "test_dag1"
         task_id = "test_task1"
@@ -1423,7 +1484,7 @@ class ClearTasksTest(unittest.TestCase):
 
     def test_xcom_enable_pickle_type(self):
         json_obj = {"key": "value"}
-        execution_date = datetime.datetime.now()
+        execution_date = timezone.utcnow()
         key = "xcom_test2"
         dag_id = "test_dag2"
         task_id = "test_task2"
@@ -1452,12 +1513,12 @@ class ClearTasksTest(unittest.TestCase):
                           value=PickleRce(),
                           dag_id="test_dag3",
                           task_id="test_task3",
-                          execution_date=datetime.datetime.now(),
+                          execution_date=timezone.utcnow(),
                           enable_pickling=False)
 
     def test_xcom_get_many(self):
         json_obj = {"key": "value"}
-        execution_date = datetime.datetime.now()
+        execution_date = timezone.utcnow()
         key = "xcom_test4"
         dag_id1 = "test_dag4"
         task_id1 = "test_task4"
