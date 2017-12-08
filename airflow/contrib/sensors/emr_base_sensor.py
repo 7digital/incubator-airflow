@@ -45,9 +45,9 @@ class EmrBaseSensor(BaseSensorOperator):
         if state in self.NON_TERMINAL_STATES:
             return False
 
-        if state in self.TERMINATING_STATES:
+        if state in self.TERMINATION_STATES:
             code = self.code_from_response(response)
-            if code in self.TERMINATION_CODES:
+            if code in self.TERMINAL_CODES:
                 raise AirflowException('EMR job failed: %s', code)
 
         if state == self.FAILED_STATE:
