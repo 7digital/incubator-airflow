@@ -27,8 +27,7 @@ class EmrJobFlowSensor(EmrBaseSensor):
 
     NON_TERMINAL_STATES = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING']
     TERMINATION_STATES = ['TERMINATING', 'TERMINATED']
-    TERMINAL_CODES = ['INTERNAL_ERROR', 'VALIDATION_ERROR', 'INSTANCE_FAILURE',
-                      'INSTANCE_FLEET_TIMEOUT', 'BOOTSTRAP_FAILURE', 'STEP_FAILURE']
+    TERMINAL_MESSAGES = ['Steps completed with errors']
     FAILED_STATE = 'TERMINATED_WITH_ERRORS'
     template_fields = ['job_flow_id']
     template_ext = ()
@@ -50,5 +49,5 @@ class EmrJobFlowSensor(EmrBaseSensor):
     def state_from_response(self, response):
         return response['Cluster']['Status']['State']
 
-    def code_from_response(self, response):
-        return response['Cluster']['Status']['StateChangeReason']['Code']
+    def state_change_reason_from_response(self, response):
+        return response['Cluster']['Status']['StateChangeReason']
