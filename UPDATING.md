@@ -3,14 +3,36 @@
 This file documents any backwards-incompatible changes in Airflow and
 assists people when migrating to a new version.
 
+## Airflow 1.9.1
+
+### Celery config
+
+To make the config of Airflow compatible with Celery, some properties have been renamed:
+```
+celeryd_concurrency -> worker_concurrency
+celery_result_backend -> result_backend
+```
+This will result in the same config parameters as Celery 4 and will make it more transparent.
+
 ## Airflow 1.9
 
 ### SSH Hook updates, along with new SSH Operator & SFTP Operator
-  SSH Hook now uses Paramiko library to create ssh client connection, instead of sub-process based ssh command execution previously (<1.9.0), so this is backward incompatible.
+
+SSH Hook now uses Paramiko library to create ssh client connection, instead of sub-process based ssh command execution previously (<1.9.0), so this is backward incompatible.
   - update SSHHook constructor
   - use SSHOperator class in place of SSHExecuteOperator which is removed now. Refer test_ssh_operator.py for usage info.
   - SFTPOperator is added to perform secure file transfer from serverA to serverB. Refer test_sftp_operator.py.py for usage info.
   - No updates are required if you are using ftpHook, it will continue work as is.
+
+### S3Hook switched to use Boto3
+
+The airflow.hooks.S3_hook.S3Hook has been switched to use boto3 instead of the older boto (a.k.a. boto2). This result in a few backwards incompatible changes to the following classes: S3Hook:
+  - the constructors no longer accepts `s3_conn_id`. It is now called `aws_conn_id`.
+  - the default conneciton is now "aws_default" instead of "s3_default"
+  - the return type of objects returned by `get_bucket` is now boto3.s3.Bucket
+  - the return type of `get_key`, and `get_wildcard_key` is now an boto3.S3.Object.
+
+If you are using any of these in your DAGs and specify a connection ID you will need to update the parameter name for the connection to "aws_conn_id": S3ToHiveTransfer, S3PrefixSensor, S3KeySensor, RedshiftToS3Transfer.
 
 ### Logging update
 
@@ -41,66 +63,7 @@ logging_config_class = my.path.default_local_settings.LOGGING_CONFIG
 
 The logging configuration file needs to be on the `PYTHONPATH`, for example `$AIRFLOW_HOME/config`. This directory is loaded by default. Of course you are free to add any directory to the `PYTHONPATH`, this might be handy when you have the config in another directory or you mount a volume in case of Docker. 
 
-You can take the config from `airflow/config_templates/airflow_local_settings.py` as a starting point. Copy the contents to `${AIRFLOW_HOME}/config/airflow_local_settings.py`,  and alter the config as you like.
-
-```
-LOGGING_CONFIG = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'airflow.task': {
-            'format': LOG_FORMAT,
-        },
-    },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'airflow.task',
-            'stream': 'ext://sys.stdout'
-        },
-        'file.task': {
-            'class': 'airflow.utils.log.file_task_handler.FileTaskHandler',
-            'formatter': 'airflow.task',
-            'base_log_folder': os.path.expanduser(BASE_LOG_FOLDER),
-            'filename_template': FILENAME_TEMPLATE,
-        },
-        # When using s3 or gcs, provide a customized LOGGING_CONFIG
-        # in airflow_local_settings within your PYTHONPATH, see UPDATING.md
-        # for details
-        's3.task': {
-            'class': 'airflow.utils.log.s3_task_handler.S3TaskHandler',
-            'formatter': 'airflow.task',
-            'base_log_folder': os.path.expanduser(BASE_LOG_FOLDER),
-            's3_log_folder': S3_LOG_FOLDER,
-            'filename_template': FILENAME_TEMPLATE,
-        },
-        'gcs.task': {
-            'class': 'airflow.utils.log.gcs_task_handler.GCSTaskHandler',
-            'formatter': 'airflow.task',
-            'base_log_folder': os.path.expanduser(BASE_LOG_FOLDER),
-            'gcs_log_folder': GCS_LOG_FOLDER,
-            'filename_template': FILENAME_TEMPLATE,
-        },
-    },
-    'loggers': {
-        'airflow.task': {
-            'handlers': ['file.task'],
-            'level': LOG_LEVEL,
-            'propagate': False,
-        },
-        'airflow.task_runner': {
-            'handlers': ['file.task'],
-            'level': LOG_LEVEL,
-            'propagate': True,
-        },
-        'airflow': {
-            'handlers': ['console'],
-            'level': LOG_LEVEL,
-            'propagate': False,
-        },
-    }
-}
-```
+You can take the config from `airflow/config_templates/airflow_local_settings.py` as a starting point. Copy the contents to `${AIRFLOW_HOME}/config/airflow_local_settings.py`,  and alter the config as you like. 
 
 If you want to customize the logging (for example, use logging rotate), you can do this by defining one or more of the logging handles that [Python has to offer](https://docs.python.org/3/library/logging.handlers.html). For more details about the Python logging, please refer to the [official logging documentation](https://docs.python.org/3/library/logging.html).
 
