@@ -72,23 +72,14 @@ def git_version(version):
         logger.warning('gitpython not found: Cannot compute the git version.')
         return ''
     except Exception as e:
-        logger.warning('Git repo not found: Cannot compute the git version.')
+        logger.warning('Cannot compute the git version. {}'.format(e))
         return ''
     if repo:
         sha = repo.head.commit.hexsha
         if repo.is_dirty():
             return '.dev0+{sha}.dirty'.format(sha=sha)
         # commit is clean
-        # is it release of `version` ?
-        try:
-            tag = repo.git.describe(
-                match='[0-9]*', exact_match=True,
-                tags=True, dirty=True)
-            assert tag == version, (tag, version)
-            return '.release:{version}+{sha}'.format(version=version,
-                                                     sha=sha)
-        except git.GitCommandError:
-            return '.dev0+{sha}'.format(sha=sha)
+        return '.release:{version}+{sha}'.format(version=version, sha=sha)
     else:
         return 'no_git_version'
 
@@ -218,7 +209,7 @@ def do_setup():
             'flask-cache>=0.13.1, <0.14',
             'flask-login==0.2.11',
             'flask-swagger==0.2.13',
-            'flask-wtf==0.14',
+            'flask-wtf>=0.14, <0.15',
             'funcsigs==1.0.0',
             'future>=0.16.0, <0.17',
             'gitpython>=2.0.2',
@@ -236,7 +227,7 @@ def do_setup():
             'python-nvd3==0.14.2',
             'requests>=2.5.1, <3',
             'setproctitle>=1.1.8, <2',
-            'sqlalchemy>=0.9.8',
+            'sqlalchemy>=1.1.15, <1.2.0',
             'sqlalchemy-utc>=0.9.0',
             'tabulate>=0.7.5, <0.8.0',
             'thrift>=0.9.2',

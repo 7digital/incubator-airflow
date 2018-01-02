@@ -108,7 +108,7 @@ def get_fernet():
         raise AirflowException('Failed to import Fernet, it may not be installed')
     try:
         return Fernet(configuration.get('core', 'FERNET_KEY').encode('utf-8'))
-    except ValueError as ve:
+    except (ValueError, TypeError) as ve:
         raise AirflowException("Could not create Fernet object: {}".format(ve))
 
 
@@ -329,6 +329,8 @@ class DagBag(BaseDagBag, LoggingMixin):
                 if isinstance(dag, DAG):
                     if not dag.full_filepath:
                         dag.full_filepath = filepath
+                        if dag.fileloc != filepath:
+                            dag.fileloc = filepath
                     dag.is_subdag = False
                     self.bag_dag(dag, parent_dag=dag, root_dag=dag)
                     found_dags.append(dag)
@@ -815,6 +817,9 @@ class TaskInstance(Base, LoggingMixin):
         self.hostname = ''
         self.init_on_load()
         self._log = logging.getLogger("airflow.task")
+        # Is this TaskInstance being currently running within `airflow run --raw`.
+        # Not persisted to the database so only valid for the current process
+        self.is_raw = False
 
     @reconstructor
     def init_on_load(self):
@@ -1887,11 +1892,12 @@ class TaskInstance(Base, LoggingMixin):
             TI.state == State.RUNNING
         ).count()
 
-    def init_run_context(self):
+    def init_run_context(self, raw=False):
         """
         Sets the log context.
         """
         self._set_context(self)
+        self.raw = raw
 
 
 class TaskFail(Base):
