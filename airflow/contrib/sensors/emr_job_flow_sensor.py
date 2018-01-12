@@ -27,8 +27,8 @@ class EmrJobFlowSensor(EmrBaseSensor):
 
     NON_TERMINAL_STATES = ['STARTING', 'BOOTSTRAPPING', 'RUNNING', 'WAITING']
     TERMINATION_STATES = ['TERMINATING', 'TERMINATED']
-    log = ['Steps completed with errors', 'All slaves in the job flow were terminated',
-           'Master node was terminated due to an increase in the market price']
+    TERMINAL_MESSAGES = ['Steps completed with errors', 'All slaves in the job flow were terminated',
+                         'Master node was terminated due to an increase in the market price']
     FAILED_STATE = 'TERMINATED_WITH_ERRORS'
     template_fields = ['job_flow_id']
     template_ext = ()
