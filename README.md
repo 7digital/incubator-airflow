@@ -142,7 +142,9 @@ Currently **officially** using Airflow:
 1. [iHeartRadio](http://www.iheart.com/)[[@yiwang](https://github.com/yiwang)]
 1. [imgix](https://www.imgix.com/) [[@dclubb](https://github.com/dclubb)]
 1. [ING](http://www.ing.com/)
+1. [Intercom](http://www.intercom.com/) [[@fox](https://github.com/fox) & [@paulvic](https://github.com/paulvic)]
 1. [Jampp](https://github.com/jampp)
+1. [JobTeaser](https://www.jobteaser.com) [[@stefani75](https://github.com/stefani75) &  [@knil-sama](https://github.com/knil-sama)]
 1. [Kiwi.com](https://kiwi.com/) [[@underyx](https://github.com/underyx)]
 1. [Kogan.com](https://github.com/kogan) [[@geeknam](https://github.com/geeknam)]
 1. [Lemann Foundation](http://fundacaolemann.org.br) [[@fernandosjp](https://github.com/fernandosjp)]
@@ -162,14 +164,18 @@ Currently **officially** using Airflow:
 1. [mytaxi](https://mytaxi.com) [[@mytaxi](https://github.com/mytaxi)]
 1. [Nerdwallet](https://www.nerdwallet.com)
 1. [New Relic](https://www.newrelic.com) [[@marcweil](https://github.com/marcweil)]
+1. [Newzoo](https://www.newzoo.com) [[@newzoo-nexus](https://github.com/newzoo-nexus)]
 1. [Nextdoor](https://nextdoor.com) [[@SivaPandeti](https://github.com/SivaPandeti), [@zshapiro](https://github.com/zshapiro) & [@jthomas123](https://github.com/jthomas123)]
 1. [OfferUp](https://offerupnow.com)
 1. [OneFineStay](https://www.onefinestay.com) [[@slangwald](https://github.com/slangwald)]
 1. [Open Knowledge International](https://okfn.org) [@vitorbaptista](https://github.com/vitorbaptista)
+1. [Overstock](https://www.github.com/overstock) [[@mhousley](https://github.com/mhousley) & [@mct0006](https://github.com/mct0006)]
 1. [Pandora Media](https://www.pandora.com/) [[@Acehaidrey](https://github.com/Acehaidrey)]
 1. [PAYMILL](https://www.paymill.com/) [[@paymill](https://github.com/paymill) & [@matthiashuschle](https://github.com/matthiashuschle)]
 1. [PayPal](https://www.paypal.com/) [[@r39132](https://github.com/r39132) & [@jhsenjaliya](https://github.com/jhsenjaliya)]
+1. [Pernod-Ricard](https://www.pernod-ricard.com/) [[@romain-nio](https://github.com/romain-nio) 
 1. [Playbuzz](https://www.playbuzz.com/) [[@clintonboys](https://github.com/clintonboys) & [@dbn](https://github.com/dbn)]
+1. [Plaid](https://www.plaid.com/) [[@plaid](https://github.com/plaid), [@AustinBGibbons](https://github.com/AustinBGibbons) & [@jeeyoungk](https://github.com/jeeyoungk)]
 1. [Postmates](http://www.postmates.com) [[@syeoryn](https://github.com/syeoryn)]
 1. [Pronto Tools](http://www.prontotools.io/) [[@zkan](https://github.com/zkan) & [@mesodiar](https://github.com/mesodiar)]
 1. [Qubole](https://qubole.com) [[@msumit](https://github.com/msumit)]
@@ -189,7 +195,9 @@ Currently **officially** using Airflow:
 1. [Thumbtack](https://www.thumbtack.com/) [[@natekupp](https://github.com/natekupp)]
 1. [Tictail](https://tictail.com/)
 1. [T2 Systems](http://t2systems.com) [[@unclaimedpants](https://github.com/unclaimedpants)]
+1. [Ubisoft](https://www.ubisoft.com/) [[@Walkoss](https://github.com/Walkoss)]
 1. [United Airlines](https://www.united.com/) [[@ilopezfr](https://github.com/ilopezfr)]
+1. [Upsight](https://www.upsight.com) [[@dhuang](https://github.com/dhuang)]
 1. [Vente-Exclusive.com](http://www.vente-exclusive.com/) [[@alexvanboxel](https://github.com/alexvanboxel)]
 1. [Vnomics](https://github.com/vnomics) [[@lpalum](https://github.com/lpalum)]
 1. [WePay](http://www.wepay.com) [[@criccomini](https://github.com/criccomini) & [@mtagle](https://github.com/mtagle)]

@@ -13,10 +13,9 @@
 # limitations under the License.
 #
 
-
 import sys
+import os
 from airflow.models import BaseOperator
-
 
 # ------------------------------------------------------------------------
 #
@@ -29,10 +28,8 @@ from airflow.models import BaseOperator
 #
 # ------------------------------------------------------------------------
 
-
 # Imports operators dynamically while keeping the package API clean,
 # abstracting the underlying modules
-
 
 _operators = {
     'bash_operator': ['BashOperator'],
@@ -53,15 +50,6 @@ _operators = {
         'PrestoValueCheckOperator',
         'PrestoIntervalCheckOperator',
     ],
-    'dagrun_operator': ['TriggerDagRunOperator'],
-    'dummy_operator': ['DummyOperator'],
-    'email_operator': ['EmailOperator'],
-    'hive_to_samba_operator': ['Hive2SambaOperator'],
-    'latest_only_operator': ['LatestOnlyOperator'],
-    'mysql_operator': ['MySqlOperator'],
-    'sqlite_operator': ['SqliteOperator'],
-    'mysql_to_hive': ['MySqlToHiveTransfer'],
-    'postgres_operator': ['PostgresOperator'],
     'sensors': [
         'BaseSensorOperator',
         'ExternalTaskSensor',
@@ -77,6 +65,15 @@ _operators = {
         'TimeSensor',
         'WebHdfsSensor',
     ],
+    'dagrun_operator': ['TriggerDagRunOperator'],
+    'dummy_operator': ['DummyOperator'],
+    'email_operator': ['EmailOperator'],
+    'hive_to_samba_operator': ['Hive2SambaOperator'],
+    'latest_only_operator': ['LatestOnlyOperator'],
+    'mysql_operator': ['MySqlOperator'],
+    'sqlite_operator': ['SqliteOperator'],
+    'mysql_to_hive': ['MySqlToHiveTransfer'],
+    'postgres_operator': ['PostgresOperator'],
     'subdag_operator': ['SubDagOperator'],
     'hive_stats_operator': ['HiveStatsCollectionOperator'],
     's3_to_hive_operator': ['S3ToHiveTransfer'],
@@ -93,8 +90,7 @@ _operators = {
     'oracle_operator': ['OracleOperator']
 }
 
-import os as _os
-if not _os.environ.get('AIRFLOW_USE_NEW_IMPORTS', False):
+if not os.environ.get('AIRFLOW_USE_NEW_IMPORTS', False):
     from airflow.utils.helpers import AirflowImporter
     airflow_importer = AirflowImporter(sys.modules[__name__], _operators)
 
@@ -109,7 +105,7 @@ def _integrate_plugins():
         ##########################################################
         # TODO FIXME Remove in Airflow 2.0
 
-        if not _os.environ.get('AIRFLOW_USE_NEW_IMPORTS', False):
+        if not os.environ.get('AIRFLOW_USE_NEW_IMPORTS', False):
             from zope.deprecation import deprecated as _deprecated
             for _operator in operators_module._objects:
                 operator_name = _operator.__name__

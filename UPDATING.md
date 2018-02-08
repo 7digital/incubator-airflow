@@ -3,7 +3,12 @@
 This file documents any backwards-incompatible changes in Airflow and
 assists people when migrating to a new version.
 
-## Airflow 1.9.1
+## Airflow Master
+
+### MySQL setting required
+
+We now rely on more strict ANSI SQL settings for MySQL in order to have sane defaults. Make sure
+to have specified `explicit_defaults_for_timestamp=1` in your my.cnf under `[mysqld]`
 
 ### Celery config
 
@@ -13,6 +18,11 @@ celeryd_concurrency -> worker_concurrency
 celery_result_backend -> result_backend
 ```
 This will result in the same config parameters as Celery 4 and will make it more transparent.
+
+### GCP Dataflow Operators
+Dataflow job labeling is now supported in Dataflow{Java,Python}Operator with a default
+"airflow-version" label, please upgrade your google-cloud-dataflow or apache-beam version
+to 2.2.0 or greater.
 
 ## Airflow 1.9
 

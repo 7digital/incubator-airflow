@@ -156,6 +156,7 @@ class BackfillJobTest(unittest.TestCase):
             'example_trigger_target_dag',
             'example_trigger_controller_dag',  # tested above
             'test_utils',  # sleeps forever
+            'example_kubernetes_operator',  # only works with k8s cluster
         ]
 
         logger = logging.getLogger('BackfillJobTest.test_backfill_examples')
@@ -331,6 +332,31 @@ class BackfillJobTest(unittest.TestCase):
             execution_date=DEFAULT_DATE + datetime.timedelta(days=1))
         ti_dependent.refresh_from_db()
         self.assertEquals(ti_dependent.state, State.SUCCESS)
+
+    def test_run_naive_taskinstance(self):
+        """
+        Test that we can run naive (non-localized) task instances
+        """
+        NAIVE_DATE = datetime.datetime(2016, 1, 1)
+        dag_id = 'test_run_ignores_all_dependencies'
+
+        dag = self.dagbag.get_dag('test_run_ignores_all_dependencies')
+        dag.clear()
+
+        task0_id = 'test_run_dependent_task'
+        args0 = ['run',
+                 '-A',
+                 dag_id,
+                 task0_id,
+                 NAIVE_DATE.isoformat()]
+
+        cli.run(self.parser.parse_args(args0))
+        ti_dependent0 = TI(
+            task=dag.get_task(task0_id),
+            execution_date=NAIVE_DATE)
+
+        ti_dependent0.refresh_from_db()
+        self.assertEquals(ti_dependent0.state, State.FAILED)
 
     def test_cli_backfill_depends_on_past(self):
         """
@@ -1531,6 +1557,15 @@ class SchedulerJobTest(unittest.TestCase):
             dag=dag2,
             owner='airflow')
 
+        dag3 = DAG(
+            dag_id='test_change_state_for_tis_without_dagrun_no_dagrun',
+            start_date=DEFAULT_DATE)
+
+        DummyOperator(
+            task_id='dummy',
+            dag=dag3,
+            owner='airflow')
+
         session = settings.Session()
         dr = dag.create_dagrun(run_id=DagRun.ID_PREFIX,
                                state=State.RUNNING,
@@ -1552,12 +1587,18 @@ class SchedulerJobTest(unittest.TestCase):
         ti2.state = State.SCHEDULED
         session.commit()
 
-        dagbag = self._make_simple_dag_bag([dag])
+        ti3 = TI(dag3.get_task('dummy'), DEFAULT_DATE)
+        ti3.state = State.SCHEDULED
+        session.merge(ti3)
+        session.commit()
+
+        dagbag = self._make_simple_dag_bag([dag, dag2, dag3])
         scheduler = SchedulerJob(num_runs=0, run_duration=0)
-        scheduler._change_state_for_tis_without_dagrun(simple_dag_bag=dagbag,
-                                                       old_states=[State.SCHEDULED, State.QUEUED],
-                                                       new_state=State.NONE,
-                                                       session=session)
+        scheduler._change_state_for_tis_without_dagrun(
+            simple_dag_bag=dagbag,
+            old_states=[State.SCHEDULED, State.QUEUED],
+            new_state=State.NONE,
+            session=session)
 
         ti = dr.get_task_instance(task_id='dummy', session=session)
         ti.refresh_from_db(session=session)
@@ -1567,6 +1608,9 @@ class SchedulerJobTest(unittest.TestCase):
         ti2.refresh_from_db(session=session)
         self.assertEqual(ti2.state, State.SCHEDULED)
 
+        ti3.refresh_from_db(session=session)
+        self.assertEquals(ti3.state, State.NONE)
+
         dr.refresh_from_db(session=session)
         dr.state = State.FAILED
 
@@ -1574,10 +1618,11 @@ class SchedulerJobTest(unittest.TestCase):
         session.merge(dr)
         session.commit()
 
-        scheduler._change_state_for_tis_without_dagrun(simple_dag_bag=dagbag,
-                                                       old_states=[State.SCHEDULED, State.QUEUED],
-                                                       new_state=State.NONE,
-                                                       session=session)
+        scheduler._change_state_for_tis_without_dagrun(
+            simple_dag_bag=dagbag,
+            old_states=[State.SCHEDULED, State.QUEUED],
+            new_state=State.NONE,
+            session=session)
         ti.refresh_from_db(session=session)
         self.assertEqual(ti.state, State.NONE)
 
