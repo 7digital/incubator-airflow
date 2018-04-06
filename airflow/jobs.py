@@ -24,7 +24,6 @@ import os
 import psutil
 import signal
 import six
-import socket
 import sys
 import threading
 import time
@@ -43,7 +42,6 @@ from time import sleep
 from airflow import configuration as conf
 from airflow import executors, models, settings
 from airflow.exceptions import AirflowException
-from airflow.logging_config import configure_logging
 from airflow.models import DAG, DagRun
 from airflow.settings import Stats
 from airflow.task.task_runner import get_task_runner
@@ -59,6 +57,7 @@ from airflow.utils.email import send_email
 from airflow.utils.log.logging_mixin import LoggingMixin, set_context, StreamLogWriter
 from airflow.utils.state import State
 from airflow.utils.configuration import tmp_configuration_copy
+from airflow.utils.net import get_hostname
 
 Base = models.Base
 ID_LEN = models.ID_LEN
@@ -68,7 +67,7 @@ class BaseJob(Base, LoggingMixin):
     """
     Abstract class to be derived for jobs. Jobs are processing items with state
     and duration that aren't task instances. For instance a BackfillJob is
-    a collection of task instance runs, but should have it's own state, start
+    a collection of task instance runs, but should have its own state, start
     and end time.
     """
 
@@ -99,7 +98,7 @@ class BaseJob(Base, LoggingMixin):
             executor=executors.GetDefaultExecutor(),
             heartrate=conf.getfloat('scheduler', 'JOB_HEARTBEAT_SEC'),
             *args, **kwargs):
-        self.hostname = socket.getfqdn()
+        self.hostname = get_hostname()
         self.executor = executor
         self.executor_class = executor.__class__.__name__
         self.start_date = timezone.utcnow()
@@ -671,8 +670,13 @@ class SchedulerJob(BaseJob):
             if dag.sla_miss_callback:
                 # Execute the alert callback
                 self.log.info(' --------------> ABOUT TO CALL SLA MISS CALL BACK ')
-                dag.sla_miss_callback(dag, task_list, blocking_task_list, slas, blocking_tis)
-                notification_sent = True
+                try:
+                    dag.sla_miss_callback(dag, task_list, blocking_task_list, slas,
+                                          blocking_tis)
+                    notification_sent = True
+                except Exception:
+                    self.log.exception("Could not call sla_miss_callback for DAG %s",
+                                       dag.dag_id)
             email_content = """\
             Here's a list of tasks that missed their SLAs:
             <pre><code>{task_list}\n<code></pre>
@@ -690,12 +694,16 @@ class SchedulerJob(BaseJob):
                         if email not in emails:
                             emails.append(email)
             if emails and len(slas):
-                send_email(
-                    emails,
-                    "[airflow] SLA miss on DAG=" + dag.dag_id,
-                    email_content)
-                email_sent = True
-                notification_sent = True
+                try:
+                    send_email(
+                        emails,
+                        "[airflow] SLA miss on DAG=" + dag.dag_id,
+                        email_content)
+                    email_sent = True
+                    notification_sent = True
+                except Exception:
+                    self.log.exception("Could not send SLA Miss email notification for"
+                                       " DAG %s", dag.dag_id)
             # If we sent any notification, update the sla_miss table
             if notification_sent:
                 for sla in slas:
@@ -1097,7 +1105,14 @@ class SchedulerJob(BaseJob):
                 # non_pooled_task_slot_count per run
                 open_slots = conf.getint('core', 'non_pooled_task_slot_count')
             else:
-                open_slots = pools[pool].open_slots(session=session)
+                if pool not in pools:
+                    self.log.warning(
+                        "Tasks using non-existent pool '%s' will not be scheduled",
+                        pool
+                    )
+                    open_slots = 0
+                else:
+                    open_slots = pools[pool].open_slots(session=session)
 
             num_queued = len(task_instances)
             self.log.info(
@@ -1154,8 +1169,8 @@ class SchedulerJob(BaseJob):
                 if task_concurrency is not None:
                     num_running = task_concurrency_map[((task_instance.dag_id, task_instance.task_id))]
                     if num_running >= task_concurrency:
-                        self.logger.info("Not executing %s since the task concurrency for this task"
-                                         " has been reached.", task_instance)
+                        self.log.info("Not executing %s since the task concurrency for"
+                                      " this task has been reached.", task_instance)
                         continue
                     else:
                         task_concurrency_map[(task_instance.dag_id, task_instance.task_id)] += 1
@@ -1618,7 +1633,7 @@ class SchedulerJob(BaseJob):
                 self.clear_nonexistent_import_errors(known_file_paths=known_file_paths)
 
             # Kick of new processes and collect results from finished ones
-            self.log.info("Heartbeating the process manager")
+            self.log.debug("Heartbeating the process manager")
             simple_dags = processor_manager.heartbeat()
 
             if self.using_sqlite:
@@ -1653,7 +1668,7 @@ class SchedulerJob(BaseJob):
                                              (State.SCHEDULED,))
 
             # Call heartbeats
-            self.log.info("Heartbeating the executor")
+            self.log.debug("Heartbeating the executor")
             self.executor.heartbeat()
 
             # Process events from the executor
@@ -1663,7 +1678,7 @@ class SchedulerJob(BaseJob):
             time_since_last_heartbeat = (timezone.utcnow() -
                                          last_self_heartbeat_time).total_seconds()
             if time_since_last_heartbeat > self.heartrate:
-                self.log.info("Heartbeating the scheduler")
+                self.log.debug("Heartbeating the scheduler")
                 self.heartbeat()
                 last_self_heartbeat_time = timezone.utcnow()
 
@@ -1796,8 +1811,8 @@ class SchedulerJob(BaseJob):
             dep_context = DepContext(deps=QUEUE_DEPS, ignore_task_deps=True)
 
             # Only schedule tasks that have their dependencies met, e.g. to avoid
-            # a task that recently got it's state changed to RUNNING from somewhere
-            # other than the scheduler from getting it's state overwritten.
+            # a task that recently got its state changed to RUNNING from somewhere
+            # other than the scheduler from getting its state overwritten.
             # TODO(aoen): It's not great that we have to check all the task instance
             # dependencies twice; once to get the task scheduled, and again to actually
             # run the task. We should try to come up with a way to only check them once.
@@ -2562,7 +2577,7 @@ class LocalTaskJob(BaseJob):
         self.task_instance.refresh_from_db()
         ti = self.task_instance
 
-        fqdn = socket.getfqdn()
+        fqdn = get_hostname()
         same_hostname = fqdn == ti.hostname
         same_process = ti.pid == os.getpid()
 

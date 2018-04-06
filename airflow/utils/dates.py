@@ -70,9 +70,9 @@ def date_range(
         end_date = timezone.utcnow()
 
     delta_iscron = False
+    tz = start_date.tzinfo
     if isinstance(delta, six.string_types):
         delta_iscron = True
-        tz = start_date.tzinfo
         start_date = timezone.make_naive(start_date, tz)
         cron = croniter(delta, start_date)
     elif isinstance(delta, timedelta):
@@ -146,7 +146,7 @@ def round_time(dt, delta, start_date=timezone.make_aware(datetime.min)):
 
     # We are looking for a datetime in the form start_date + i * delta
     # which is as close as possible to dt. Since delta could be a relative
-    # delta we don't know it's exact length in seconds so we cannot rely on
+    # delta we don't know its exact length in seconds so we cannot rely on
     # division to find i. Instead we employ a binary search algorithm, first
     # finding an upper and lower limit and then disecting the interval until
     # we have found the closest match.

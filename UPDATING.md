@@ -5,6 +5,40 @@ assists people when migrating to a new version.
 
 ## Airflow Master
 
+### New Webserver UI with Role-Based Access Control
+
+Our current webserver UI uses the Flask-Admin extension. The new webserver UI uses the [Flask-AppBuilder (FAB)](https://github.com/dpgaspar/Flask-AppBuilder) extension. It has built-in authentication support and Role-Based Access Control (RBAC), which provides configurable roles and permissions for individual users.
+
+To turn on this feature, in your airflow.cfg file, under [webserver], set configuration variable `rbac = True`, and then run `airflow` command, which will generate the `webserver_config.py` file in your $AIRFLOW_HOME.
+
+#### Setting up Authentication
+
+FAB has built-in authentication support for DB, OAuth, OpenID, LDAP, and REMOTE_USER. The default auth type is `AUTH_DB`.
+
+For any other authentication type (OAuth, OpenID, LDAP, REMOTE_USER), see the [Authentication section of FAB docs](http://flask-appbuilder.readthedocs.io/en/latest/security.html#authentication-methods) for how to configure variables in webserver_config.py file.
+
+Once you modify your config file, run `airflow initdb` to generate new tables for RBAC support (these tables will have the prefix `ab_`).
+
+#### Creating an Admin Account
+
+Once you updated configuration settings and generated new tables, you need to create an admin account with `airflow create_user` command.
+
+#### Using your new UI
+
+Run `airflow webserver` as usual to start the new UI. This will bring you to a log in page, enter the admin username and password that were just created.
+
+There are five roles created for Airflow by default: Admin, User, Op, Viewer, and Public. To configure roles/permissions, go to the `Security` tab and click `List Roles` in the new UI.
+
+#### Breaking changes
+- Users created and stored in the old users table will not be migrated automatically. You will need to reconfigure with one of FAB's built-in authentication support.
+- Airflow dag home page is now `/home` (instead of `/admin`).
+- All ModelViews in Flask-AppBuilder follow a different pattern from Flask-Admin. The `/admin` part of the url path will no longer exist. For example: `/admin/connection` becomes `/connection/list`, `/admin/connection/new` becomes `/connection/add`, `/admin/connection/edit` becomes `/connection/edit`, etc.
+- Due to security concerns, the new webserver will no longer support the features in the `Data Profiling` menu of old UI, including `Ad Hoc Query`, `Charts`, and `Known Events`.
+
+### airflow.contrib.sensors.hdfs_sensors renamed to airflow.contrib.sensors.hdfs_sensor
+
+We now rename airflow.contrib.sensors.hdfs_sensors to airflow.contrib.sensors.hdfs_sensor for consistency purpose.
+
 ### MySQL setting required
 
 We now rely on more strict ANSI SQL settings for MySQL in order to have sane defaults. Make sure
@@ -23,6 +57,10 @@ This will result in the same config parameters as Celery 4 and will make it more
 Dataflow job labeling is now supported in Dataflow{Java,Python}Operator with a default
 "airflow-version" label, please upgrade your google-cloud-dataflow or apache-beam version
 to 2.2.0 or greater.
+
+### Google cloud connection string
+
+With Airflow 1.9 or lower there where two connection strings for the Google Cloud operators, both `google_cloud_storage_default` and `google_cloud_default`. This can be confusing and therefore the `google_cloud_storage_default` connection id has been replaced with `google_cloud_default` to make the connection id consistent across Airflow.
 
 ## Airflow 1.9
 
@@ -71,9 +109,9 @@ The main benefit is easier configuration of the logging by setting a single cent
 logging_config_class = my.path.default_local_settings.LOGGING_CONFIG
 ```
 
-The logging configuration file needs to be on the `PYTHONPATH`, for example `$AIRFLOW_HOME/config`. This directory is loaded by default. Of course you are free to add any directory to the `PYTHONPATH`, this might be handy when you have the config in another directory or you mount a volume in case of Docker. 
+The logging configuration file needs to be on the `PYTHONPATH`, for example `$AIRFLOW_HOME/config`. This directory is loaded by default. Of course you are free to add any directory to the `PYTHONPATH`, this might be handy when you have the config in another directory or you mount a volume in case of Docker.
 
-You can take the config from `airflow/config_templates/airflow_local_settings.py` as a starting point. Copy the contents to `${AIRFLOW_HOME}/config/airflow_local_settings.py`,  and alter the config as you like. 
+You can take the config from `airflow/config_templates/airflow_local_settings.py` as a starting point. Copy the contents to `${AIRFLOW_HOME}/config/airflow_local_settings.py`,  and alter the config as you like.
 
 If you want to customize the logging (for example, use logging rotate), you can do this by defining one or more of the logging handles that [Python has to offer](https://docs.python.org/3/library/logging.handlers.html). For more details about the Python logging, please refer to the [official logging documentation](https://docs.python.org/3/library/logging.html).
 
@@ -168,7 +206,7 @@ interfere.
 Please read through these options, defaults have changed since 1.7.1.
 
 #### child_process_log_directory
-In order the increase the robustness of the scheduler, DAGS our now processed in their own process. Therefore each
+In order to increase the robustness of the scheduler, DAGs are now processed in their own processes. Therefore each
 DAG has its own log file for the scheduler. These are placed in `child_process_log_directory` which defaults to
 `<AIRFLOW_HOME>/scheduler/latest`. You will need to make sure these log files are removed.
 

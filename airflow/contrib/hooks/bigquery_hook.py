@@ -28,10 +28,9 @@ from airflow.hooks.dbapi_hook import DbApiHook
 from airflow.utils.log.logging_mixin import LoggingMixin
 from apiclient.discovery import HttpError, build
 from googleapiclient import errors
-from pandas.tools.merge import concat
 from pandas_gbq.gbq import \
     _check_google_client_version as gbq_check_google_client_version
-from pandas_gbq.gbq import _parse_data as gbq_parse_data
+from pandas_gbq import read_gbq
 from pandas_gbq.gbq import \
     _test_google_api_imports as gbq_test_google_api_imports
 from pandas_gbq.gbq import GbqConnector
@@ -49,7 +48,7 @@ class BigQueryHook(GoogleCloudBaseHook, DbApiHook, LoggingMixin):
                  delegate_to=None,
                  use_legacy_sql=True):
         super(BigQueryHook, self).__init__(
-            conn_id=bigquery_conn_id, delegate_to=delegate_to)
+            gcp_conn_id=bigquery_conn_id, delegate_to=delegate_to)
         self.use_legacy_sql = use_legacy_sql
 
     def get_conn(self):
@@ -96,24 +95,13 @@ class BigQueryHook(GoogleCloudBaseHook, DbApiHook, LoggingMixin):
             defaults to use `self.use_legacy_sql` if not specified
         :type dialect: string in {'legacy', 'standard'}
         """
-        service = self.get_service()
-        project = self._get_field('project')
-
         if dialect is None:
             dialect = 'legacy' if self.use_legacy_sql else 'standard'
 
-        connector = BigQueryPandasConnector(project, service, dialect=dialect)
-        schema, pages = connector.run_query(bql)
-        dataframe_list = []
-
-        while len(pages) > 0:
-            page = pages.pop()
-            dataframe_list.append(gbq_parse_data(schema, page))
-
-        if len(dataframe_list) > 0:
-            return concat(dataframe_list, ignore_index=True)
-        else:
-            return gbq_parse_data(schema, [])
+        return read_gbq(bql,
+                        project_id=self._get_field('project'),
+                        dialect=dialect,
+                        verbose=False)
 
     def table_exists(self, project_id, dataset_id, table_id):
         """
@@ -207,6 +195,71 @@ class BigQueryBaseCursor(LoggingMixin):
         self.use_legacy_sql = use_legacy_sql
         self.running_job_id = None
 
+    def create_empty_table(self,
+                           project_id,
+                           dataset_id,
+                           table_id,
+                           schema_fields=None,
+                           time_partitioning={}
+                           ):
+        """
+        Creates a new, empty table in the dataset.
+
+        :param project_id: The project to create the table into.
+        :type project_id: str
+        :param dataset_id: The dataset to create the table into.
+        :type dataset_id: str
+        :param table_id: The Name of the table to be created.
+        :type table_id: str
+        :param schema_fields: If set, the schema field list as defined here:
+        https://cloud.google.com/bigquery/docs/reference/rest/v2/jobs#configuration.load.schema
+
+        **Example**: ::
+
+            schema_fields=[{"name": "emp_name", "type": "STRING", "mode": "REQUIRED"},
+                           {"name": "salary", "type": "INTEGER", "mode": "NULLABLE"}]
+
+        :type schema_fields: list
+        :param time_partitioning: configure optional time partitioning fields i.e.
+            partition by field, type and expiration as per API specifications.
+
+            .. seealso::
+            https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#timePartitioning
+        :type time_partitioning: dict
+
+        :return:
+        """
+        project_id = project_id if project_id is not None else self.project_id
+
+        table_resource = {
+            'tableReference': {
+                'tableId': table_id
+            }
+        }
+
+        if schema_fields:
+            table_resource['schema'] = {'fields': schema_fields}
+
+        if time_partitioning:
+            table_resource['timePartitioning'] = time_partitioning
+
+        self.log.info('Creating Table %s:%s.%s',
+                      project_id, dataset_id, table_id)
+
+        try:
+            self.service.tables().insert(
+                projectId=project_id,
+                datasetId=dataset_id,
+                body=table_resource).execute()
+
+            self.log.info('Table created successfully: %s:%s.%s',
+                          project_id, dataset_id, table_id)
+
+        except HttpError as err:
+            raise AirflowException(
+                'BigQuery job failed. Error was: {}'.format(err.content)
+            )
+
     def create_external_table(self,
                               external_project_dataset_table,
                               schema_fields,
@@ -298,7 +351,7 @@ class BigQueryBaseCursor(LoggingMixin):
         source_format = source_format.upper()
         allowed_formats = [
             "CSV", "NEWLINE_DELIMITED_JSON", "AVRO", "GOOGLE_SHEETS",
-            "DATASTORE_BACKUP"
+            "DATASTORE_BACKUP", "PARQUET"
         ]
         if source_format not in allowed_formats:
             raise ValueError("{0} is not a valid source format. "
@@ -400,8 +453,11 @@ class BigQueryBaseCursor(LoggingMixin):
                   destination_dataset_table=False,
                   write_disposition='WRITE_EMPTY',
                   allow_large_results=False,
+                  flatten_results=False,
                   udf_config=False,
+                  use_legacy_sql=None,
                   maximum_billing_tier=None,
+                  maximum_bytes_billed=None,
                   create_disposition='CREATE_IF_NEEDED',
                   query_params=None,
                   schema_update_options=(),
@@ -423,12 +479,25 @@ class BigQueryBaseCursor(LoggingMixin):
         :type write_disposition: string
         :param allow_large_results: Whether to allow large results.
         :type allow_large_results: boolean
+        :param flatten_results: If true and query uses legacy SQL dialect, flattens
+            all nested and repeated fields in the query results. ``allowLargeResults``
+            must be true if this is set to false. For standard SQL queries, this
+            flag is ignored and results are never flattened.
+        :type flatten_results: boolean
         :param udf_config: The User Defined Function configuration for the query.
             See https://cloud.google.com/bigquery/user-defined-functions for details.
+        :param use_legacy_sql: Whether to use legacy SQL (true) or standard SQL (false).
+            If `None`, defaults to `self.use_legacy_sql`.
+        :type use_legacy_sql: boolean
         :type udf_config: list
         :param maximum_billing_tier: Positive integer that serves as a
             multiplier of the basic price.
         :type maximum_billing_tier: integer
+        :param maximum_bytes_billed: Limits the bytes billed for this job.
+            Queries that will have bytes billed beyond this limit will fail
+            (without incurring a charge). If unspecified, this will be
+            set to your project default.
+        :type maximum_bytes_billed: float
         :param create_disposition: Specifies whether the job is allowed to
             create new tables.
         :type create_disposition: string
@@ -458,11 +527,15 @@ class BigQueryBaseCursor(LoggingMixin):
                 "Please only use one or more of the following options: {1}"
                 .format(schema_update_options, allowed_schema_update_options))
 
+        if use_legacy_sql is None:
+            use_legacy_sql = self.use_legacy_sql
+
         configuration = {
             'query': {
                 'query': bql,
-                'useLegacySql': self.use_legacy_sql,
+                'useLegacySql': use_legacy_sql,
                 'maximumBillingTier': maximum_billing_tier,
+                'maximumBytesBilled': maximum_bytes_billed,
                 'priority': priority
             }
         }
@@ -477,6 +550,8 @@ class BigQueryBaseCursor(LoggingMixin):
             configuration['query'].update({
                 'allowLargeResults':
                 allow_large_results,
+                'flattenResults':
+                flatten_results,
                 'writeDisposition':
                 write_disposition,
                 'createDisposition':
@@ -653,6 +728,7 @@ class BigQueryBaseCursor(LoggingMixin):
                  field_delimiter=',',
                  max_bad_records=0,
                  quote_character=None,
+                 ignore_unknown_values=False,
                  allow_quoted_newlines=False,
                  allow_jagged_rows=False,
                  schema_update_options=(),
@@ -696,6 +772,12 @@ class BigQueryBaseCursor(LoggingMixin):
         :param quote_character: The value that is used to quote data sections in a CSV
             file.
         :type quote_character: string
+        :param ignore_unknown_values: [Optional] Indicates if BigQuery should allow
+            extra values that are not represented in the table schema.
+            If true, the extra values are ignored. If false, records with extra columns
+            are treated as bad records, and if there are too many bad records, an
+            invalid error is returned in the job result.
+        :type ignore_unknown_values: bool
         :param allow_quoted_newlines: Whether to allow quoted newlines (true) or not
             (false).
         :type allow_quoted_newlines: boolean
@@ -725,7 +807,7 @@ class BigQueryBaseCursor(LoggingMixin):
         source_format = source_format.upper()
         allowed_formats = [
             "CSV", "NEWLINE_DELIMITED_JSON", "AVRO", "GOOGLE_SHEETS",
-            "DATASTORE_BACKUP"
+            "DATASTORE_BACKUP", "PARQUET"
         ]
         if source_format not in allowed_formats:
             raise ValueError("{0} is not a valid source format. "
@@ -762,6 +844,7 @@ class BigQueryBaseCursor(LoggingMixin):
                 'sourceFormat': source_format,
                 'sourceUris': source_uris,
                 'writeDisposition': write_disposition,
+                'ignoreUnknownValues': ignore_unknown_values
             }
         }
 
@@ -805,6 +888,8 @@ class BigQueryBaseCursor(LoggingMixin):
             src_fmt_configs['skipLeadingRows'] = skip_leading_rows
         if 'fieldDelimiter' not in src_fmt_configs:
             src_fmt_configs['fieldDelimiter'] = field_delimiter
+        if 'ignoreUnknownValues' not in src_fmt_configs:
+            src_fmt_configs['ignoreUnknownValues'] = ignore_unknown_values
         if quote_character is not None:
             src_fmt_configs['quote'] = quote_character
         if allow_quoted_newlines:
@@ -818,6 +903,7 @@ class BigQueryBaseCursor(LoggingMixin):
             ],
             'DATASTORE_BACKUP': ['projectionFields'],
             'NEWLINE_DELIMITED_JSON': ['autodetect', 'ignoreUnknownValues'],
+            'PARQUET': ['autodetect', 'ignoreUnknownValues'],
             'AVRO': [],
         }
         valid_configs = src_fmt_to_configs_mapping[source_format]
@@ -1191,9 +1277,9 @@ class BigQueryCursor(BigQueryBaseCursor):
 
         :param operation: The query to execute.
         :type operation: string
-        :param parameters: List of dictionary parameters to substitute into the
+        :param seq_of_parameters: List of dictionary parameters to substitute into the
             query.
-        :type parameters: list
+        :type seq_of_parameters: list
         """
         for parameters in seq_of_parameters:
             self.execute(operation, parameters)

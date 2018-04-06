@@ -32,6 +32,7 @@ from airflow.utils.sqlalchemy import setup_event_handlers
 
 log = logging.getLogger(__name__)
 
+RBAC = conf.getboolean('webserver', 'rbac')
 
 TIMEZONE = pendulum.timezone('UTC')
 try:
@@ -84,7 +85,6 @@ ___  ___ |  / _  /   _  __/ _  / / /_/ /_ |/ |/ /
  _/_/  |_/_/  /_/    /_/    /_/  \____/____/|__/
  """
 
-BASE_LOG_URL = '/admin/airflow/log'
 LOGGING_LEVEL = logging.INFO
 
 # the prefix to append to gunicorn worker processes after init
@@ -188,9 +188,17 @@ def configure_adapters():
         pass
 
 
+def configure_action_logging():
+    """
+    Any additional configuration (register callback) for airflow.utils.action_loggers
+    module
+    :return: None
+    """
+    pass
+
+
 try:
     from airflow_local_settings import *
-
     log.info("Loaded airflow_local_settings.")
 except:
     pass
@@ -199,6 +207,7 @@ configure_logging()
 configure_vars()
 configure_adapters()
 configure_orm()
+configure_action_logging()
 
 # Ensure we close DB connections at scheduler and gunicon worker terminations
 atexit.register(dispose_orm)

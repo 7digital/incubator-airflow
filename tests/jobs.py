@@ -23,7 +23,6 @@ import multiprocessing
 import os
 import shutil
 import six
-import socket
 import threading
 import time
 import unittest
@@ -44,8 +43,9 @@ from airflow.utils.db import provide_session
 from airflow.utils.state import State
 from airflow.utils.timeout import timeout
 from airflow.utils.dag_processing import SimpleDag, SimpleDagBag, list_py_file_paths
+from airflow.utils.net import get_hostname
 
-from mock import Mock, patch
+from mock import Mock, patch, MagicMock, PropertyMock
 from sqlalchemy.orm.session import make_transient
 from tests.executors.test_executor import TestExecutor
 
@@ -94,7 +94,7 @@ class BackfillJobTest(unittest.TestCase):
         target_dag.clear()
 
         scheduler = SchedulerJob()
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(target_dag, queue=queue)
         self.assertFalse(queue.append.called)
 
@@ -107,7 +107,7 @@ class BackfillJobTest(unittest.TestCase):
         job.run()
 
         scheduler = SchedulerJob()
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(target_dag, queue=queue)
 
         self.assertTrue(queue.append.called)
@@ -841,7 +841,7 @@ class LocalTaskJobTest(unittest.TestCase):
 
         mock_pid.return_value = 1
         ti.state = State.RUNNING
-        ti.hostname = socket.getfqdn()
+        ti.hostname = get_hostname()
         ti.pid = 1
         session.merge(ti)
         session.commit()
@@ -911,7 +911,7 @@ class LocalTaskJobTest(unittest.TestCase):
                                session=session)
         ti = dr.get_task_instance(task_id=task.task_id, session=session)
         ti.state = State.RUNNING
-        ti.hostname = socket.getfqdn()
+        ti.hostname = get_hostname()
         ti.pid = 1
         session.commit()
 
@@ -1169,6 +1169,30 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertIn(tis[0].key, res_keys)
         self.assertIn(tis[1].key, res_keys)
         self.assertIn(tis[3].key, res_keys)
+
+    def test_nonexistent_pool(self):
+        dag_id = 'SchedulerJobTest.test_nonexistent_pool'
+        task_id = 'dummy_wrong_pool'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
+        task = DummyOperator(dag=dag, task_id=task_id, pool="this_pool_doesnt_exist")
+        dagbag = self._make_simple_dag_bag([dag])
+
+        scheduler = SchedulerJob(**self.default_scheduler_args)
+        session = settings.Session()
+
+        dr = scheduler.create_dag_run(dag)
+
+        ti = TI(task, dr.execution_date)
+        ti.state = State.SCHEDULED
+        session.merge(ti)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+        session.commit()
+        self.assertEqual(0, len(res))
 
     def test_find_executable_task_instances_none(self):
         dag_id = 'SchedulerJobTest.test_find_executable_task_instances_none'
@@ -1919,7 +1943,7 @@ class SchedulerJobTest(unittest.TestCase):
         dr = scheduler.create_dag_run(dag)
         self.assertIsNotNone(dr)
 
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.append.assert_called_with(
@@ -1951,7 +1975,7 @@ class SchedulerJobTest(unittest.TestCase):
             dag_id='test_scheduler_do_not_schedule_removed_task',
             start_date=DEFAULT_DATE)
 
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -1977,7 +2001,7 @@ class SchedulerJobTest(unittest.TestCase):
         dr = scheduler.create_dag_run(dag)
         self.assertIsNone(dr)
 
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -2009,7 +2033,7 @@ class SchedulerJobTest(unittest.TestCase):
         session.commit()
         session.close()
 
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(dag, queue=queue)
 
         queue.put.assert_not_called()
@@ -2047,7 +2071,7 @@ class SchedulerJobTest(unittest.TestCase):
             dag=dag,
             owner='airflow')
 
-        queue = mock.Mock()
+        queue = Mock()
         scheduler._process_task_instances(dag, queue=queue)
 
         tis = dr.get_task_instances()
@@ -2185,7 +2209,7 @@ class SchedulerJobTest(unittest.TestCase):
         # Reduce max_active_runs to 1
         dag.max_active_runs = 1
 
-        queue = mock.Mock()
+        queue = Mock()
         # and schedule them in, so we can check how many
         # tasks are put on the queue (should be one, not 3)
         scheduler._process_task_instances(dag, queue=queue)
@@ -2359,7 +2383,7 @@ class SchedulerJobTest(unittest.TestCase):
         session = settings.Session()
 
         # Mock the callback function so we can verify that it was not called
-        sla_callback = mock.MagicMock()
+        sla_callback = MagicMock()
 
         # Create dag with a start of 2 days ago, but an sla of 1 day ago so we'll already have an sla_miss on the books
         test_start_date = days_ago(2)
@@ -2391,6 +2415,88 @@ class SchedulerJobTest(unittest.TestCase):
         scheduler.manage_slas(dag=dag, session=session)
 
         sla_callback.assert_not_called()
+
+    def test_scheduler_sla_miss_callback_exception(self):
+        """
+        Test that the scheduler gracefully logs an exception if there is a problem
+         calling the sla_miss_callback
+        """
+        session = settings.Session()
+
+        sla_callback = MagicMock(side_effect=RuntimeError('Could not call function'))
+
+        test_start_date = days_ago(2)
+        dag = DAG(dag_id='test_sla_miss',
+                  sla_miss_callback=sla_callback,
+                  default_args={'start_date': test_start_date})
+
+        task = DummyOperator(task_id='dummy',
+                             dag=dag,
+                             owner='airflow',
+                             sla=datetime.timedelta(hours=1))
+
+        session.merge(models.TaskInstance(task=task,
+                                          execution_date=test_start_date,
+                                          state='Success'))
+
+        # Create an SlaMiss where notification was sent, but email was not
+        session.merge(models.SlaMiss(task_id='dummy',
+                                     dag_id='test_sla_miss',
+                                     execution_date=test_start_date))
+
+        # Now call manage_slas and see if the sla_miss callback gets called
+        scheduler = SchedulerJob(dag_id='test_sla_miss',
+                                 **self.default_scheduler_args)
+
+        with mock.patch('airflow.jobs.SchedulerJob.log',
+                        new_callable=PropertyMock) as mock_log:
+            scheduler.manage_slas(dag=dag, session=session)
+            sla_callback.assert_called()
+            mock_log().exception.assert_called_with(
+                'Could not call sla_miss_callback for DAG %s',
+                'test_sla_miss')
+
+    @mock.patch("airflow.utils.email.send_email")
+    def test_scheduler_sla_miss_email_exception(self, mock_send_email):
+        """
+        Test that the scheduler gracefully logs an exception if there is a problem
+          sending an email
+        """
+        session = settings.Session()
+
+        # Mock the callback function so we can verify that it was not called
+        mock_send_email.side_effect = RuntimeError('Could not send an email')
+
+        test_start_date = days_ago(2)
+        dag = DAG(dag_id='test_sla_miss',
+                  default_args={'start_date': test_start_date,
+                                'sla': datetime.timedelta(days=1)})
+
+        task = DummyOperator(task_id='dummy',
+                             dag=dag,
+                             owner='airflow',
+                             email='test@test.com',
+                             sla=datetime.timedelta(hours=1))
+
+        session.merge(models.TaskInstance(task=task,
+                                          execution_date=test_start_date,
+                                          state='Success'))
+
+        # Create an SlaMiss where notification was sent, but email was not
+        session.merge(models.SlaMiss(task_id='dummy',
+                                     dag_id='test_sla_miss',
+                                     execution_date=test_start_date))
+
+        scheduler = SchedulerJob(dag_id='test_sla_miss',
+                                 num_runs=1,
+                                 **self.default_scheduler_args)
+
+        with mock.patch('airflow.jobs.SchedulerJob.log',
+                        new_callable=PropertyMock) as mock_log:
+            scheduler.manage_slas(dag=dag, session=session)
+            mock_log().exception.assert_called_with(
+                'Could not send SLA Miss email notification for DAG %s',
+                'test_sla_miss')
 
     def test_retry_still_in_executor(self):
         """
@@ -2548,7 +2654,7 @@ class SchedulerJobTest(unittest.TestCase):
 
     def test_dag_get_active_runs(self):
         """
-        Test to check that a DAG returns it's active runs
+        Test to check that a DAG returns its active runs
         """
 
         now = timezone.utcnow()
