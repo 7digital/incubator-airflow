@@ -14,6 +14,7 @@ unittests.db
 airflow/git_version
 airflow/www/static/coverage/
 logs/
+airflow-webserver.pid
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -130,3 +131,10 @@ ENV/
 
 # Spark
 rat-results.txt
+
+# Git stuff
+.gitattributes
+# Kubernetes generated templated files
+*.generated
+*.tar.gz
+scripts/ci/kubernetes/kube/.generated/airflow.yaml

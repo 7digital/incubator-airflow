@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#   http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 from __future__ import absolute_import
 from __future__ import division
@@ -33,11 +38,13 @@ from airflow import configuration, models, settings, AirflowException
 from airflow.exceptions import AirflowDagCycleException, AirflowSkipException
 from airflow.jobs import BackfillJob
 from airflow.models import DAG, TaskInstance as TI
+from airflow.models import DagRun
 from airflow.models import State as ST
-from airflow.models import DagModel, DagStat
+from airflow.models import DagModel, DagRun, DagStat
 from airflow.models import clear_task_instances
 from airflow.models import XCom
 from airflow.models import Connection
+from airflow.jobs import LocalTaskJob
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.bash_operator import BashOperator
 from airflow.operators.python_operator import PythonOperator
@@ -47,7 +54,7 @@ from airflow.utils import timezone
 from airflow.utils.weight_rule import WeightRule
 from airflow.utils.state import State
 from airflow.utils.trigger_rule import TriggerRule
-from mock import patch
+from mock import patch, ANY
 from parameterized import parameterized
 from tempfile import NamedTemporaryFile
 
@@ -207,6 +214,14 @@ class DagTest(unittest.TestCase):
 
         self.assertEquals(tuple(), dag.topological_sort())
 
+    def test_dag_none_default_args_start_date(self):
+        """
+        Tests if a start_date of None in default_args
+        works.
+        """
+        dag = DAG('DAG', default_args={'start_date': None})
+        self.assertEqual(dag.timezone, settings.TIMEZONE)
+
     def test_dag_task_priority_weight_total(self):
         width = 5
         depth = 5
@@ -361,9 +376,23 @@ class DagTest(unittest.TestCase):
         result = task.render_template('', '{{ foo }}', dict())
         self.assertEqual(result, 'bar')
 
+    def test_render_template_numeric_field(self):
+        """ Tests if render_template from a field works,
+            if a custom filter was defined"""
+
+        dag = DAG('test-dag',
+                  start_date=DEFAULT_DATE,
+                  user_defined_macros=dict(foo='bar'))
+
+        with dag:
+            task = DummyOperator(task_id='op1')
+
+        result = task.render_template('', 1, dict())
+        self.assertEqual(result, 1)
+
     def test_user_defined_filters(self):
         def jinja_udf(name):
-            return 'Hello %s' %name
+            return 'Hello %s' % name
 
         dag = models.DAG('test-dag',
                          start_date=DEFAULT_DATE,
@@ -568,12 +597,21 @@ class DagStatTest(unittest.TestCase):
 
 class DagRunTest(unittest.TestCase):
 
-    def create_dag_run(self, dag, state=State.RUNNING, task_states=None, execution_date=None):
+    def create_dag_run(self, dag,
+                       state=State.RUNNING,
+                       task_states=None,
+                       execution_date=None,
+                       is_backfill=False,
+                       ):
         now = timezone.utcnow()
         if execution_date is None:
             execution_date = now
+        if is_backfill:
+            run_id = BackfillJob.ID_PREFIX + now.isoformat()
+        else:
+            run_id = 'manual__' + now.isoformat()
         dag_run = dag.create_dagrun(
-            run_id='manual__' + now.isoformat(),
+            run_id=run_id,
             execution_date=execution_date,
             start_date=now,
             state=state,
@@ -588,6 +626,28 @@ class DagRunTest(unittest.TestCase):
             session.close()
 
         return dag_run
+
+    def test_clear_task_instances_for_backfill_dagrun(self):
+        now = timezone.utcnow()
+        session = settings.Session()
+        dag_id = 'test_clear_task_instances_for_backfill_dagrun'
+        dag = DAG(dag_id=dag_id, start_date=now)
+        self.create_dag_run(dag, execution_date=now, is_backfill=True)
+
+        task0 = DummyOperator(task_id='backfill_task_0', owner='test', dag=dag)
+        ti0 = TI(task=task0, execution_date=now)
+        ti0.run()
+
+        qry = session.query(TI).filter(
+            TI.dag_id == dag.dag_id).all()
+        clear_task_instances(qry, session)
+        session.commit()
+        ti0.refresh_from_db()
+        dr0 = session.query(DagRun).filter(
+            DagRun.dag_id == dag_id,
+            DagRun.execution_date == now
+        ).first()
+        self.assertEquals(dr0.state, State.RUNNING)
 
     def test_id_for_date(self):
         run_id = models.DagRun.id_for_date(
@@ -954,6 +1014,21 @@ class DagBagTest(unittest.TestCase):
 
         dagbag = models.DagBag(include_examples=True)
         self.assertEqual([], dagbag.process_file(f.name))
+
+    def test_zip_skip_log(self):
+        """
+        test the loading of a DAG from within a zip file that skips another file because
+        it doesn't have "airflow" and "DAG"
+        """
+        from mock import Mock
+        with patch('airflow.models.DagBag.log') as log_mock:
+            log_mock.info = Mock()
+            test_zip_path = os.path.join(TEST_DAGS_FOLDER, "test_zip.zip")
+            dagbag = models.DagBag(dag_folder=test_zip_path, include_examples=False)
+
+            self.assertTrue(dagbag.has_logged)
+            log_mock.info.assert_any_call("File %s assumed to contain no DAGs. Skipping.",
+                                          test_zip_path)
 
     def test_zip(self):
         """
@@ -1333,6 +1408,32 @@ class DagBagTest(unittest.TestCase):
 
         self.assertEqual([], dagbag.process_file(None))
 
+    @patch.object(TI, 'handle_failure')
+    def test_kill_zombies(self, mock_ti):
+        """
+        Test that kill zombies call TIs failure handler with proper context
+        """
+        dagbag = models.DagBag()
+        session = settings.Session
+        dag = dagbag.get_dag('example_branch_operator')
+        task = dag.get_task(task_id='run_this_first')
+
+        ti = TI(task, datetime.datetime.now() - datetime.timedelta(1), 'running')
+        lj = LocalTaskJob(ti)
+        lj.state = State.SHUTDOWN
+
+        session.add(lj)
+        session.commit()
+
+        ti.job_id = lj.id
+
+        session.add(ti)
+        session.commit()
+
+        dagbag.kill_zombies()
+        mock_ti.assert_called_with(ANY,
+                                   configuration.getboolean('core', 'unit_test_mode'),
+                                   ANY)
 
 class TaskInstanceTest(unittest.TestCase):
 
@@ -2003,8 +2104,39 @@ class TaskInstanceTest(unittest.TestCase):
         self.assertEqual(d['task_id'][0], 'op')
         self.assertEqual(pendulum.parse(d['execution_date'][0]), now)
 
+    def test_overwrite_params_with_dag_run_conf(self):
+        task = DummyOperator(task_id='op')
+        ti = TI(task=task, execution_date=datetime.datetime.now())
+        dag_run = DagRun()
+        dag_run.conf = {"override": True}
+        params = {"override": False}
+
+        ti.overwrite_params_with_dag_run_conf(params, dag_run)
+
+        self.assertEqual(True, params["override"])
+
+    def test_overwrite_params_with_dag_run_none(self):
+        task = DummyOperator(task_id='op')
+        ti = TI(task=task, execution_date=datetime.datetime.now())
+        params = {"override": False}
+
+        ti.overwrite_params_with_dag_run_conf(params, None)
+
+        self.assertEqual(False, params["override"])
+
+    def test_overwrite_params_with_dag_run_conf_none(self):
+        task = DummyOperator(task_id='op')
+        ti = TI(task=task, execution_date=datetime.datetime.now())
+        params = {"override": False}
+        dag_run = DagRun()
+
+        ti.overwrite_params_with_dag_run_conf(params, dag_run)
+
+        self.assertEqual(False, params["override"])
+
 
 class ClearTasksTest(unittest.TestCase):
+
     def test_clear_task_instances(self):
         dag = DAG('test_clear_task_instances', start_date=DEFAULT_DATE,
                   end_date=DEFAULT_DATE + datetime.timedelta(days=10))
@@ -2206,24 +2338,34 @@ class ClearTasksTest(unittest.TestCase):
         self.assertEqual(ti2.max_tries, 1)
 
     def test_xcom_disable_pickle_type(self):
+        configuration.load_test_config()
+
         json_obj = {"key": "value"}
         execution_date = timezone.utcnow()
         key = "xcom_test1"
         dag_id = "test_dag1"
         task_id = "test_task1"
 
+        configuration.set("core", "enable_xcom_pickling", "False")
+
         XCom.set(key=key,
                  value=json_obj,
                  dag_id=dag_id,
                  task_id=task_id,
-                 execution_date=execution_date,
-                 enable_pickling=False)
+                 execution_date=execution_date)
 
         ret_value = XCom.get_one(key=key,
-                 dag_id=dag_id,
-                 task_id=task_id,
-                 execution_date=execution_date,
-                 enable_pickling=False)
+                                 dag_id=dag_id,
+                                 task_id=task_id,
+                                 execution_date=execution_date)
+
+        self.assertEqual(ret_value, json_obj)
+
+        session = settings.Session()
+        ret_value = session.query(XCom).filter(XCom.key == key, XCom.dag_id == dag_id,
+                                               XCom.task_id == task_id,
+                                               XCom.execution_date == execution_date
+                                               ).first().value
 
         self.assertEqual(ret_value, json_obj)
 
@@ -2234,18 +2376,26 @@ class ClearTasksTest(unittest.TestCase):
         dag_id = "test_dag2"
         task_id = "test_task2"
 
+        configuration.set("core", "enable_xcom_pickling", "True")
+
         XCom.set(key=key,
                  value=json_obj,
                  dag_id=dag_id,
                  task_id=task_id,
-                 execution_date=execution_date,
-                 enable_pickling=True)
+                 execution_date=execution_date)
 
         ret_value = XCom.get_one(key=key,
-                 dag_id=dag_id,
-                 task_id=task_id,
-                 execution_date=execution_date,
-                 enable_pickling=True)
+                                 dag_id=dag_id,
+                                 task_id=task_id,
+                                 execution_date=execution_date)
+
+        self.assertEqual(ret_value, json_obj)
+
+        session = settings.Session()
+        ret_value = session.query(XCom).filter(XCom.key == key, XCom.dag_id == dag_id,
+                                               XCom.task_id == task_id,
+                                               XCom.execution_date == execution_date
+                                               ).first().value
 
         self.assertEqual(ret_value, json_obj)
 
@@ -2253,13 +2403,15 @@ class ClearTasksTest(unittest.TestCase):
         class PickleRce(object):
             def __reduce__(self):
                 return (os.system, ("ls -alt",))
+
+        configuration.set("core", "xcom_enable_pickling", "False")
+
         self.assertRaises(TypeError, XCom.set,
                           key="xcom_test3",
                           value=PickleRce(),
                           dag_id="test_dag3",
                           task_id="test_task3",
-                          execution_date=timezone.utcnow(),
-                          enable_pickling=False)
+                          execution_date=timezone.utcnow())
 
     def test_xcom_get_many(self):
         json_obj = {"key": "value"}
@@ -2270,23 +2422,22 @@ class ClearTasksTest(unittest.TestCase):
         dag_id2 = "test_dag5"
         task_id2 = "test_task5"
 
+        configuration.set("core", "xcom_enable_pickling", "True")
+
         XCom.set(key=key,
                  value=json_obj,
                  dag_id=dag_id1,
                  task_id=task_id1,
-                 execution_date=execution_date,
-                 enable_pickling=True)
+                 execution_date=execution_date)
 
         XCom.set(key=key,
                  value=json_obj,
                  dag_id=dag_id2,
                  task_id=task_id2,
-                 execution_date=execution_date,
-                 enable_pickling=True)
+                 execution_date=execution_date)
 
         results = XCom.get_many(key=key,
-                                execution_date=execution_date,
-                                enable_pickling=True)
+                                execution_date=execution_date)
 
         for result in results:
             self.assertEqual(result.value, json_obj)
@@ -2313,3 +2464,27 @@ class ConnectionTest(unittest.TestCase):
         mock_get.return_value = 'dGVzdA=='
         test_connection = Connection(extra='testextra')
         self.assertEqual(test_connection.extra, 'testextra')
+
+    def test_connection_from_uri_without_extras(self):
+        uri = 'scheme://user:password@host%2flocation:1234/schema'
+        connection = Connection(uri=uri)
+        self.assertEqual(connection.conn_type, 'scheme')
+        self.assertEqual(connection.host, 'host/location')
+        self.assertEqual(connection.schema, 'schema')
+        self.assertEqual(connection.login, 'user')
+        self.assertEqual(connection.password, 'password')
+        self.assertEqual(connection.port, 1234)
+        self.assertIsNone(connection.extra)
+
+    def test_connection_from_uri_with_extras(self):
+        uri = 'scheme://user:password@host%2flocation:1234/schema?'\
+            'extra1=a%20value&extra2=%2fpath%2f'
+        connection = Connection(uri=uri)
+        self.assertEqual(connection.conn_type, 'scheme')
+        self.assertEqual(connection.host, 'host/location')
+        self.assertEqual(connection.schema, 'schema')
+        self.assertEqual(connection.login, 'user')
+        self.assertEqual(connection.password, 'password')
+        self.assertEqual(connection.port, 1234)
+        self.assertDictEqual(connection.extra_dejson, {'extra1': 'a value',
+                                                       'extra2': '/path/'})
