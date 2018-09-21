@@ -1,6 +1,8 @@
 API Reference
 =============
 
+.. _api-reference-operators:
+
 Operators
 ---------
 Operators allow for generation of certain types of tasks that become nodes in
@@ -117,6 +119,7 @@ Operators
 .. autoclass:: airflow.contrib.operators.bigquery_get_data.BigQueryGetDataOperator
 .. autoclass:: airflow.contrib.operators.bigquery_operator.BigQueryCreateEmptyTableOperator
 .. autoclass:: airflow.contrib.operators.bigquery_operator.BigQueryCreateExternalTableOperator
+.. autoclass:: airflow.contrib.operators.bigquery_operator.BigQueryDeleteDatasetOperator
 .. autoclass:: airflow.contrib.operators.bigquery_operator.BigQueryOperator
 .. autoclass:: airflow.contrib.operators.bigquery_table_delete_operator.BigQueryTableDeleteOperator
 .. autoclass:: airflow.contrib.operators.bigquery_to_bigquery.BigQueryToBigQueryOperator
@@ -150,6 +153,7 @@ Operators
 .. autoclass:: airflow.contrib.operators.file_to_wasb.FileToWasbOperator
 .. autoclass:: airflow.contrib.operators.gcp_container_operator.GKEClusterCreateOperator
 .. autoclass:: airflow.contrib.operators.gcp_container_operator.GKEClusterDeleteOperator
+.. autoclass:: airflow.contrib.operators.gcp_container_operator.GKEPodOperator
 .. autoclass:: airflow.contrib.operators.gcs_download_operator.GoogleCloudStorageDownloadOperator
 .. autoclass:: airflow.contrib.operators.gcs_list_operator.GoogleCloudStorageListOperator
 .. autoclass:: airflow.contrib.operators.gcs_operator.GoogleCloudStorageCreateBucketOperator
@@ -168,6 +172,8 @@ Operators
 .. autoclass:: airflow.contrib.operators.mlengine_operator.MLEngineTrainingOperator
 .. autoclass:: airflow.contrib.operators.mongo_to_s3.MongoToS3Operator
 .. autoclass:: airflow.contrib.operators.mysql_to_gcs.MySqlToGoogleCloudStorageOperator
+.. autoclass:: airflow.contrib.operators.oracle_to_azure_data_lake_transfer.OracleToAzureDataLakeTransfer
+.. autoclass:: airflow.contrib.operators.oracle_to_oracle_transfer.OracleToOracleTransfer
 .. autoclass:: airflow.contrib.operators.postgres_to_gcs_operator.PostgresToGoogleCloudStorageOperator
 .. autoclass:: airflow.contrib.operators.pubsub_operator.PubSubTopicCreateOperator
 .. autoclass:: airflow.contrib.operators.pubsub_operator.PubSubTopicDeleteOperator
@@ -177,6 +183,8 @@ Operators
 .. autoclass:: airflow.contrib.operators.qubole_check_operator.QuboleCheckOperator
 .. autoclass:: airflow.contrib.operators.qubole_check_operator.QuboleValueCheckOperator
 .. autoclass:: airflow.contrib.operators.qubole_operator.QuboleOperator
+.. autoclass:: airflow.contrib.operators.s3_copy_object_operator.S3CopyObjectOperator
+.. autoclass:: airflow.contrib.operators.s3_delete_objects_operator.S3DeleteObjectsOperator
 .. autoclass:: airflow.contrib.operators.s3_list_operator.S3ListOperator
 .. autoclass:: airflow.contrib.operators.s3_to_gcs_operator.S3ToGoogleCloudStorageOperator
 .. autoclass:: airflow.contrib.operators.segment_track_event_operator.SegmentTrackEventOperator
@@ -198,7 +206,8 @@ Sensors
 .. autoclass:: airflow.contrib.sensors.aws_redshift_cluster_sensor.AwsRedshiftClusterSensor
 .. autoclass:: airflow.contrib.sensors.bash_sensor.BashSensor
 .. autoclass:: airflow.contrib.sensors.bigquery_sensor.BigQueryTableSensor
-.. autoclass:: airflow.contrib.sensors.cassandra_sensor.CassandraRecordSensor
+.. autoclass:: airflow.contrib.sensors.cassandra_record_sensor.CassandraRecordSensor
+.. autoclass:: airflow.contrib.sensors.cassandra_table_sensor.CassandraTableSensor
 .. autoclass:: airflow.contrib.sensors.datadog_sensor.DatadogSensor
 .. autoclass:: airflow.contrib.sensors.emr_base_sensor.EmrBaseSensor
 .. autoclass:: airflow.contrib.sensors.emr_job_flow_sensor.EmrJobFlowSensor
@@ -235,12 +244,14 @@ Variable                            Description
 =================================   ====================================
 ``{{ ds }}``                        the execution date as ``YYYY-MM-DD``
 ``{{ ds_nodash }}``                 the execution date as ``YYYYMMDD``
-``{{ prev_ds }}``                   the previous execution date as ``YYYY-MM-DD``.
+``{{ prev_ds }}``                   the previous execution date as ``YYYY-MM-DD``
                                     if ``{{ ds }}`` is ``2016-01-08`` and ``schedule_interval`` is ``@weekly``,
-                                    ``{{ prev_ds }}`` will be ``2016-01-01``.
-``{{ next_ds }}``                   the next execution date as ``YYYY-MM-DD``.
+                                    ``{{ prev_ds }}`` will be ``2016-01-01``
+``{{ prev_ds_nodash }}``            the previous execution date as ``YYYYMMDD`` if exists, else ``None`
+``{{ next_ds }}``                   the next execution date as ``YYYY-MM-DD``
                                     if ``{{ ds }}`` is ``2016-01-01`` and ``schedule_interval`` is ``@weekly``,
-                                    ``{{ prev_ds }}`` will be ``2016-01-08``.
+                                    ``{{ prev_ds }}`` will be ``2016-01-08``
+``{{ next_ds_nodash }}``            the next execution date as ``YYYYMMDD`` if exists, else ``None`
 ``{{ yesterday_ds }}``              yesterday's date as ``YYYY-MM-DD``
 ``{{ yesterday_ds_nodash }}``       yesterday's date as ``YYYYMMDD``
 ``{{ tomorrow_ds }}``               tomorrow's date as ``YYYY-MM-DD``
